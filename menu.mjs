@@ -219,6 +219,74 @@ export function candidateActions(current) {
 export const host = { tui: undefined, agent: undefined };
 
 /**
+ * Wire the host modules the entry point (`index.ts`) imported statically. Static
+ * import at the entry is the only path that resolves under pi's loader: a dynamic
+ * `await import('@earendil-works/pi-tui')` from inside an extension falls through to
+ * Node's native resolver and fails with ERR_MODULE_NOT_FOUND. Called once at install
+ * time; the lazy import in `runDashboard` stays as the fallback for whoever loads
+ * `extension.mjs` directly (for example `pi -e ./extension.mjs`).
+ */
+export function provideHost(tui, agent) {
+  if (tui) host.tui = tui;
+  if (agent) host.agent = agent;
+  return host;
+}
+
+/**
+ * Which export the screen needs, and from which host package. `Container` is a
+ * pi-tui export (`pi-tui/dist/index.d.ts:32`); `DynamicBorder`, the two list themes
+ * and the key-hint helpers are pi-coding-agent exports
+ * (`pi-coding-agent/dist/index.d.ts:36-37`). Getting this wrong is not a cosmetic
+ * mistake: `DynamicBorder` used to be destructured off pi-tui, came back `undefined`,
+ * and `new DynamicBorder(...)` threw inside the `ctx.ui.custom()` factory — so
+ * `/economist` never showed a menu, while a fake that repeated the same lie kept the
+ * unit tests green. The smoke script asserts this table against the installed host.
+ */
+export const HOST_EXPORTS = {
+  '@earendil-works/pi-tui': ['Container', 'SettingsList', 'SelectList', 'Text', 'Input'],
+  '@earendil-works/pi-coding-agent': [
+    'DynamicBorder',
+    'getSettingsListTheme',
+    'getSelectListTheme',
+  ],
+};
+/** Optional niceties: used when present, literal fallbacks when not.
+ * `keyHint`/`keyText` are pi-coding-agent exports (same index.d.ts line). */
+export const OPTIONAL_EXPORTS = {
+  '@earendil-works/pi-coding-agent': ['keyHint', 'keyText'],
+};
+
+/** Name the exports the host does not actually provide (missing module counts as every export). */
+export function missingHostExports(tuiPkg, agentPkg) {
+  const mods = {
+    '@earendil-works/pi-tui': tuiPkg,
+    '@earendil-works/pi-coding-agent': agentPkg,
+  };
+  return Object.entries(HOST_EXPORTS).flatMap(([name, exports]) =>
+    exports.filter((key) => typeof mods[name]?.[key] !== 'function').map((key) => `${name}.${key}`),
+  );
+}
+
+/** First useful line of a resolution failure, for the degradation notice. */
+function why(error) {
+  return String(error?.code ?? error?.message ?? error).split('\n')[0];
+}
+
+/**
+ * Degradation is allowed; silence is not. The caller still prints the text panel,
+ * and the user learns which host capability was missing instead of staring at a
+ * command that appears to do nothing.
+ */
+function degrade(ctx, reason) {
+  try {
+    ctx?.ui?.notify?.(`Economist sem painel interativo: ${reason}`, 'warning');
+  } catch {
+    // A broken notify must not replace the reason with a second error.
+  }
+  return false;
+}
+
+/**
  * Show the dashboard. Returns false when the host cannot run a custom TUI screen,
  * so the caller falls back to the status panel. `host` argument injects the real
  * pi-tui and coding-agent modules in tests; production resolves them lazily.
@@ -228,20 +296,51 @@ export async function runDashboard(deps, injection = {}) {
   if (ctx.mode !== 'tui' || typeof ctx.ui.custom !== 'function') return false;
   let tuiPkg = injection.tuiPkg ?? host.tui,
     agentPkg = injection.agentPkg ?? host.agent;
-  if (!tuiPkg || !agentPkg) {
+  // Fallback only: production arrives with `host` already wired by index.ts.
+  if (!tuiPkg) {
     try {
-      tuiPkg ??= await import('@earendil-works/pi-tui');
-      agentPkg ??= await import('@earendil-works/pi-coding-agent');
-    } catch {
-      return false;
+      tuiPkg = await import('@earendil-works/pi-tui');
+    } catch (error) {
+      return degrade(ctx, `@earendil-works/pi-tui indisponível (${why(error)})`);
     }
   }
-  const { Container, SettingsList, SelectList, Text, Input, DynamicBorder } = tuiPkg;
-  const { getSettingsListTheme, getSelectListTheme } = agentPkg;
+  if (!agentPkg) {
+    try {
+      agentPkg = await import('@earendil-works/pi-coding-agent');
+    } catch (error) {
+      return degrade(ctx, `@earendil-works/pi-coding-agent indisponível (${why(error)})`);
+    }
+  }
+  const missing = missingHostExports(tuiPkg, agentPkg);
+  if (missing.length)
+    return degrade(
+      ctx,
+      `faltam exports: ${missing.join(', ')} — este pi não expõe a tela customizada esperada`,
+    );
+  const { Container, SettingsList, SelectList, Text, Input } = tuiPkg;
+  const {
+    DynamicBorder,
+    getSettingsListTheme,
+    getSelectListTheme,
+    keyHint,
+    keyText,
+  } = agentPkg;
   const changed = [];
   let pendingId = null;
   await ctx.ui.custom((tuiRef, theme, keybindings, done) => {
     const cancel = (data) => keybindings?.matches?.(data, 'tui.select.cancel') === true;
+    /**
+     * Hint lines read the user's OWN keybinding config (`keyHint`/`keyText`) instead
+     * of hardcoding "Enter"/"Esc" in prose, and fall back to the literal wording when
+     * an older host does not export them. Keys the code *acts on* always go through
+     * `keybindings.matches` — never a raw byte.
+     */
+    const navHint =
+      typeof keyText === 'function'
+        ? `  ${keyText('tui.select.up')}/${keyText('tui.select.down')} navegar · digite para filtrar · ${keyText('tui.select.confirm')} escolher · ${keyText('tui.select.cancel')} voltar`
+        : '  ↑↓ navegar · digite para filtrar · enter escolher · esc voltar';
+    const backHint =
+      typeof keyHint === 'function' ? `  ${keyHint('tui.select.cancel', 'voltar')}` : '  esc voltar';
     const box = new Container();
     box.addChild(new DynamicBorder((str) => theme.fg('accent', str)));
     box.addChild(new Text(theme.fg('accent', theme.bold ? theme.bold(title) : title), 1, 0));
@@ -278,7 +377,7 @@ export async function runDashboard(deps, injection = {}) {
       select.onCancel = () => onClose();
       inner.addChild(select);
       inner.addChild(
-        new Text(theme.fg('dim', '  ↑↓ navegar · digite para filtrar · enter escolher · esc voltar'), 1, 0),
+        new Text(theme.fg('dim', navHint.trim()), 1, 0),
       );
       return {
         render: (width) => inner.render(width),
@@ -292,7 +391,7 @@ export async function runDashboard(deps, injection = {}) {
     const textScreen = (heading, lines, onClose) => {
       const inner = frame(heading);
       for (const line of lines) inner.addChild(new Text(theme.fg('muted', `  ${line}`), 0, 0));
-      inner.addChild(new Text(theme.fg('dim', '  esc voltar'), 1, 0));
+      inner.addChild(new Text(theme.fg('dim', backHint.trim()), 1, 0));
       return {
         render: (width) => inner.render(width),
         invalidate: () => inner.invalidate(),
@@ -335,7 +434,7 @@ export async function runDashboard(deps, injection = {}) {
       explain: (_current, close) => textScreen('Última decisão', menus.explain(), () => close()),
       help: (_current, close) => textScreen('Linha de comando', menus.help(), () => close()),
       simulate: (_current, close) => {
-        const inner = frame('Simular um pedido · enter roda, esc volta');
+        const inner = frame('Simular um pedido · confirmar roda, cancelar volta');
         const input = new Input({ placeholder: 'ex.: refatorar auth e rodar testes' });
         inner.addChild(input);
         const result = new Text(
@@ -345,6 +444,20 @@ export async function runDashboard(deps, injection = {}) {
         );
         inner.addChild(result);
         let showing = false;
+        let pending = null;
+        const run = (text) => {
+          if (!text || showing) return pending;
+          showing = true;
+          result.setText(theme.fg('dim', '  calculando…'));
+          pending = Promise.resolve(menus.simulate(text))
+            .then((lines) => result.setText(lines.map((l) => `  ${l}`).join('\n')))
+            .catch((error) => result.setText(theme.fg('error', `  ${error.message}`)))
+            .finally(() => tuiRef.requestRender());
+          return pending;
+        };
+        // The host's own Input decides what "submit" means (`tui.input.submit`), so the
+        // screen never compares raw bytes: `input.d.ts` documents this callback.
+        input.onSubmit = run;
         return {
           render: (width) => inner.render(width),
           invalidate: () => inner.invalidate(),
@@ -359,19 +472,10 @@ export async function runDashboard(deps, injection = {}) {
               close();
               return;
             }
-            if (showing) return;
-            input.handleInput(data);
-            if (data === '\r' || data === '\n') {
-              const text = input.getValue();
-              if (!text) return;
-              showing = true;
-              result.setText(theme.fg('dim', '  calculando…'));
-              Promise.resolve(menus.simulate(text))
-                .then((lines) => result.setText(lines.map((l) => `  ${l}`).join('\n')))
-                .catch((error) => result.setText(theme.fg('error', `  ${error.message}`)))
-                .finally(() => tuiRef.requestRender());
-            }
-            tuiRef.requestRender();
+            if (showing) return pending;
+            // Returning the child's promise lets a caller (and the tests) await the
+            // dry run instead of counting ticks.
+            return input.handleInput(data);
           },
         };
       },
@@ -383,9 +487,8 @@ export async function runDashboard(deps, injection = {}) {
         panel(currentValue === '—' ? undefined : currentValue, close);
     }
     box.addChild(list);
-    box.addChild(
-      new Text(theme.fg('dim', '  Enter/Espaço muda o valor · Esc volta · no topo, Esc fecha'), 1, 0),
-    );
+    // No hint line of our own: the real `SettingsList` already appends its own
+    // ("Enter/Space to change · Esc to cancel"), and a second one reads as noise.
     box.addChild(new DynamicBorder((str) => theme.fg('accent', str)));
     return {
       render: (width) => box.render(width),

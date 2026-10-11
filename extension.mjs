@@ -13,10 +13,21 @@ import {
   now,
 } from './lib/core.mjs';
 import { defaults, assess, rank, Classifiers, failureClass, tokenEstimate, decideEffort, clampLevel, requiredTier, levels as THINKING_LEVELS } from './routing.mjs';
-import { dashboardItems, explainLines, runDashboard, tierForPool, candidateActions, shortName } from './menu.mjs';
+import {
+  dashboardItems,
+  explainLines,
+  runDashboard,
+  tierForPool,
+  candidateActions,
+  shortName,
+  provideHost,
+} from './menu.mjs';
 import { readFile } from 'node:fs/promises';
 import { benchmark } from './benchmark.mjs';
-export default function economist(pi) {
+export default function economist(pi, injected = {}) {
+  // The entry point hands us the host modules it imported statically; without this the
+  // dashboard would have to resolve them lazily and silently degrade (see index.ts).
+  provideHost(injected.tui, injected.agent);
   const rt = createRuntime(pi, 'economist', defaults),
     classifiers = new Classifiers();
   let last = null,
@@ -1051,7 +1062,11 @@ export default function economist(pi) {
         },
         'selected-as': {
           lock: 'thinking',
-          values: ['ceiling', 'ignore'],
+          // `ceiling-if-set` is the declared default (routing.mjs) and `validateConfig`
+          // accepts it, so the table has to offer it too: the dashboard row listed the
+          // three values from its own copy of the list and cycling to the default threw
+          // `Invalid selected-as` here. One table, one list of values (rule B).
+          values: ['ceiling-if-set', 'ceiling', 'ignore'],
           patch: (v) => ({ thinking: { useSelectedAs: v } }),
           note: (v) => `seu /thinking vale como ${v}`,
         },
@@ -1083,10 +1098,11 @@ export default function economist(pi) {
         );
       const apply = async (patch, note) => {
         const written = await persist(patch);
-        output(
-          ctx,
-          `${note}\nsaved ${JSON.stringify(patch)} → ${written}\nRun /reload if a change does not take effect.`,
-        );
+        // `rt.save` merges the patch into the live config as it writes, so the change
+        // is already in effect: telling the user to `/reload` here taught them to
+        // distrust a command that had just worked. `/reload` stays mentioned only where
+        // it actually fixes something (a virtual model the runtime has not registered).
+        output(ctx, `${note}\nsaved ${JSON.stringify(patch)} → ${written} · já em efeito`);
         return note;
       };
       const setField = (id, value, { quiet = false } = {}) => {

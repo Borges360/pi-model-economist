@@ -23,7 +23,17 @@ simulação de um pedido digitado ali dentro.
 
 Onde o cliente não tem tela customizada (JSON, print, RPC sem `custom`), `/economist`
 shows um painel de estado (modo, política, pool, escopo, esforço, última decisão) e
-depois as linhas de comando — nunca um despejo de gramática.
+depois as linhas de comando — nunca um despejo de gramática. Se o host **não expõe** a
+tela que o painel precisa (um export que mudou de pacote, por exemplo), o painel avisa
+**qual** export faltou em vez de sumir em silêncio.
+
+Os componentes de terminal vêm do próprio pi: `index.ts` importa
+`@earendil-works/pi-tui` e `@earendil-works/pi-coding-agent` **estaticamente** e os
+entrega para a extensão. Isso é requisito, não estilo — `await import(...)` de um
+especificador nu dentro de uma extensão é resolvido pelo Node, não pelo mapeamento de
+módulos do host, e morre em `ERR_MODULE_NOT_FOUND`. `node --test` não carrega
+`index.ts`, então a suíte continua rodando sem o host instalado
+(`test-support/fake-tui.mjs` espelha qual pacote exporta o quê).
 
 ```
 /economist setup
@@ -85,8 +95,9 @@ economist mode rules
 economist policy economy
 ```
 
-`mode`,` policy`,` classifier`,` classifier-model` e` candidates` persistem no arquivo
-(de volta e meio por reload) e escrevem **somente** a própria seção. A lista explícita
+`mode`,` policy`,` classifier`,` classifier-model` e` candidates` persistem no arquivo e
+entram em efeito na hora (a escrita mergeia o patch na config viva; não peça `/reload`
+para uma mudança que já aconteceu) e escrevem **somente** a própria seção. A lista explícita
 do usuário nunca é sobrescrita: um candidato inválido é nomeado no erro com o conserto.
 
 Instalação como pacote: `pi install ./pi-model-economist`. Remoção:` pi remove ./pi-model-economist`; selecione um modelo físico para desligar o roteamento imediatamente.
@@ -109,4 +120,27 @@ Configuração global: `${PI_SUITE_HOME:-~/.pi/agent/pi-suite}/config.yaml`. Pro
 Decisões, alternativas rejeitadas, fallbacks, resultados verificados e auditoria são arquivos **JSON/JSONL**, isolados pelo hash da raiz Git canônica. Nenhum banco de dados. O custo efetivo e as chamadas diretas/classificadoras são contabilizados pelo `pi-cost-profiler`, quando instalado. Sem profiler não há bloqueio financeiro global de todos os provedores: o roteador aplica seu limite próprio e o teto do classificador.
 
 `npm test`: regras, tiers, preço desconhecido, JSON inválido, timeout, continuidade, manuais, persistência, redação e integridade. APIs externas foram testadas com doubles, não com cobranças reais. Os IDs de exemplos são placeholders: escolha IDs efetivamente disponíveis no seu registry.
+
+O painel é validado contra o **host instalado**, não só contra double:
+
+```sh
+node scripts/smoke-dashboard.mjs
+```
+
+Ele carrega `index.ts` pelo carregador real do pi (jiti + mapeamento de módulos), confere
+qual export vem de qual pacote, monta a tela com os componentes reais e a dirige com bytes
+de terminal (`↓`, `Enter`, `Esc`), provando que o menu abre, cicla, grava, entra no submenu
+de dois níveis e fecha com resumo. Nenhuma chamada de modelo é feita: a decisão mostrada é
+um `simulate`.
+
+### Mudanças visíveis na 0.3.1
+
+- **`/economist` (vazio) passa a abrir o painel.** Antes abria em nenhuma instalação real:
+  `DynamicBorder` era lido do pacote errado e o `await import` do host não resolvia. Nenhuma
+  config muda por causa disso.
+- **A confirmação de escrita não pede mais `/reload`** — o patch já mergeia na config viva.
+  Se alguém dependia da linha como dica, o comportamento continua idêntico; só a mensagem saiu.
+- **`selected-as ceiling-if-set` vira selecionável pelos dois caminhos.** Era o default
+  declarado (`thinking.useSelectedAs`) e o painel oferecia, mas a tabela de campos recusava
+  com `Invalid selected-as`. Para voltar ao comportamento anterior, `selected-as ceiling`.
 # pi-model-economist

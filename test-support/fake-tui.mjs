@@ -41,6 +41,7 @@ export function fakeTui() {
     constructor(options = {}) {
       this.value = '';
       this.placeholder = options.placeholder;
+      this.onSubmit = undefined;
       created.input.push(this);
     }
     getValue() {
@@ -49,11 +50,19 @@ export function fakeTui() {
     setValue(v) {
       this.value = v;
     }
+    /** Faithful to the host `Input`: submit belongs to the component, not to the
+     * screen (`pi-tui/dist/components/input.d.ts`: `onSubmit?: (value) => void`). */
     handleInput(data) {
-      if (data !== '\r' && data !== '\n') this.value += data;
+      if (data === '\r' || data === '\n') return this.onSubmit?.(this.value);
+      this.value += data;
     }
     render() {
       return [`> ${this.value}`];
+    }
+    /** Test driver: type a whole request and submit it. */
+    submit(text) {
+      if (text !== undefined) this.value = text;
+      return this.onSubmit?.(this.value);
     }
   }
   class SelectList {
@@ -142,9 +151,18 @@ export function fakeTui() {
     fg: (_token, text) => String(text),
     bold: (text) => String(text),
   };
+  // The fake mirrors the REAL module shape, down to which package owns which export:
+  // `Container` comes from pi-tui (`pi-tui/dist/index.d.ts:32`) while `DynamicBorder`,
+  // the list themes and `keyHint`/`keyText` come from pi-coding-agent
+  // (`pi-coding-agent/dist/index.d.ts:36-37`). The first version of this file put
+  // `DynamicBorder` in `tuiPkg`; the dashboard then threw `DynamicBorder is not a
+  // constructor` inside `ctx.ui.custom()` — no menu for the user, 49 green tests. When
+  // the host moves an export, move it here too and `scripts/smoke-dashboard.mjs` will
+  // say which one actually moved.
   return {
-    tuiPkg: { Container, SettingsList, SelectList, Text, Input, DynamicBorder },
+    tuiPkg: { Container, SettingsList, SelectList, Text, Input },
     agentPkg: {
+      DynamicBorder,
       getSettingsListTheme: () => ({
         label: (t) => t,
         value: (t) => t,
@@ -159,10 +177,20 @@ export function fakeTui() {
         scrollInfo: (t) => t,
         noMatch: (t) => t,
       }),
+      keyHint: (key, text) => `[${key.split('.').pop()}] ${text}`,
+      keyText: (key) => `[${key.split('.').pop()}]`,
     },
     theme,
     created,
-    keybindings: { matches: (data, name) => name === 'tui.select.cancel' && data === '\u001b' },
+    keybindings: {
+      matches: (data, name) =>
+        ({
+          'tui.select.cancel': ['\u001b', '\u0003'],
+          'tui.select.confirm': ['\r', ' '],
+          'tui.select.up': ['\x1b[A'],
+          'tui.select.down': ['\x1b[B'],
+        })[name]?.includes(data) ?? false,
+    },
   };
 }
 

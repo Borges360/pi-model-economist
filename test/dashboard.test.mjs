@@ -10,10 +10,9 @@ import { fakeTui } from '../test-support/fake-tui.mjs';
 import { fakePi } from '../test-support/fakes.mjs';
 
 const tick = () => new Promise((r) => setImmediate(r));
-/** The dashboard writes through promises the UI never awaits: give them room. */
-const settle = async (n = 6) => {
-  for (let i = 0; i < n; i++) await new Promise((r) => setTimeout(r, 1));
-};
+/** The dashboard writes through promises the UI never awaits: the drivers below hand
+ * back the write promise, so a test awaits the effect instead of counting ticks
+ * (tick-counting is the usual source of Windows flack). */
 const chat = (id, price, extra = {}) => ({
   provider: 'openrouter',
   id,
@@ -151,8 +150,7 @@ test('the simulate panel routes a turn for free and esc leaves the dashboard ope
   const screen = settings.top();
   // Keys reach the component, exactly as the terminal delivers them.
   for (const ch of 'olá') screen.handleInput(ch);
-  screen.handleInput('\r');
-  await settle(12);
+  await screen.handleInput('\r');
   const lines = screen.render(80).join('\n');
   assert.match(lines, /openrouter\/cheap\/model/, 'the dry run names the model it would use');
   assert.match(lines, /esforço definido por/, 'and the effort it would dispatch');
