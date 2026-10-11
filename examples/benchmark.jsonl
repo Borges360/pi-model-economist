@@ -1,0 +1,2 @@
+{"id":"explain-001","prompt":"Explique este método","verifiedAccepted":false,"observedCost":null,"baselineCost":null}
+{"id":"concurrency-001","prompt":"Corrija a concorrência e idempotência em produção","verifiedAccepted":false,"observedCost":null,"baselineCost":null}
