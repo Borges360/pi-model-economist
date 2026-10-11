@@ -61,3 +61,4 @@ Configuração global: `${PI_SUITE_HOME:-~/.pi/agent/pi-suite}/config.yaml`. Pro
 Decisões, alternativas rejeitadas, fallbacks, resultados verificados e auditoria são arquivos **JSON/JSONL**, isolados pelo hash da raiz Git canônica. Nenhum banco de dados. O custo efetivo e as chamadas diretas/classificadoras são contabilizados pelo `pi-cost-profiler`, quando instalado. Sem profiler não há bloqueio financeiro global de todos os provedores: o roteador aplica seu limite próprio e o teto do classificador.
 
 `npm test`: regras, tiers, preço desconhecido, JSON inválido, timeout, continuidade, manuais, persistência, redação e integridade. APIs externas foram testadas com doubles, não com cobranças reais. Os IDs de exemplos são placeholders: escolha IDs efetivamente disponíveis no seu registry.
+# pi-model-economist
