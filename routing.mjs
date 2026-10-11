@@ -2,6 +2,45 @@ import { hash, uid, now, redact, timed, Circuit } from './lib/core.mjs';
 export const difficulties = ['trivial', 'simple', 'moderate', 'complex', 'critical'];
 export const kinds = ['explain', 'search', 'edit', 'test', 'debug', 'design', 'incident'];
 export const risks = ['security', 'production', 'database', 'concurrency', 'data-loss'];
+/**
+ * JS `\b` is ASCII-only, so it fires *inside* accented words: "olá" and "o que é"
+ * never matched an opener, and a risk word ending in á/é/í/õ was missed at the end
+ * of a sentence. These boundaries treat any Unicode letter or digit as word-constituent.
+ */
+const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const startsWithWord = (text, ...openers) => {
+  const t = text.trim().toLowerCase();
+  return openers.some(
+    (o) => new RegExp(`^${esc(o.toLowerCase())}(?=$|[^\\p{L}\\p{N}])`, 'u').test(t),
+  );
+};
+const endsWithWord = (text, ...terms) => {
+  const t = text.toLowerCase();
+  return terms.some(
+    (w) => new RegExp(`(?<=^|[^\\p{L}\\p{N}])${esc(w.toLowerCase())}(?=$|[^\\p{L}\\p{N}])`, 'u').test(t),
+  );
+};
+const SIMPLE_OPENERS = [
+  'hi',
+  'hello',
+  'hey',
+  'olá',
+  'ola',
+  'oi',
+  'oie',
+  'explain',
+  'explique',
+  'explica',
+  'resuma',
+  'resumir',
+  'summarize',
+  'what is',
+  'what are',
+  'o que é',
+  'o que e',
+  'quem é',
+  'why is',
+];
 export const defaults = {
   modelEconomist: {
     enabled: true,
@@ -42,15 +81,48 @@ export const defaults = {
   },
 };
 export function assess(text, { images = false, contextTokens = 0 } = {}) {
-  const matched = risks.filter((r, i) =>
-    [
-      /\b(security|auth|credential|secret|segredo|permissão|password|senha|token|api[_ -]?key)\b/i,
-      /\b(production|produção|deploy|incident|incidente)\b/i,
-      /\b(database|migration|sql|banco de dados|migração)\b/i,
-      /concurren|concorrên|race condition|idempotên|idempoten/i,
-      /\b(delete|destroy|apagar|excluir|data.loss|perda de dados)\b/i,
-    ][i].test(text),
-  );
+  const detectors = [
+    () =>
+      endsWithWord(
+        text,
+        'security',
+        'auth',
+        'credential',
+        'secret',
+        'segurança',
+        'segredo',
+        'permissão',
+        'password',
+        'senha',
+        'token',
+      ) || /api[_ -]?key/i.test(text),
+    () =>
+      endsWithWord(
+        text,
+        'production',
+        'produção',
+        'deploy',
+        'incident',
+        'incidente',
+        'hotfix',
+      ),
+    () =>
+      endsWithWord(text, 'database', 'migration', 'sql', 'migração', 'banco') ||
+      /banco de dados/i.test(text),
+    () => /concurren|concorrên|concorrencia|race.?condition|idempotên|idempoten/i.test(text),
+    () =>
+      endsWithWord(
+        text,
+        'delete',
+        'destroy',
+        'drop',
+        'truncate',
+        'apagar',
+        'excluir',
+        'deletar',
+      ) || /data.?loss|perda de dados/i.test(text),
+  ];
+  const matched = risks.filter((_risk, i) => detectors[i]());
   const kind = /incident|incidente/i.test(text)
     ? 'incident'
     : /design|arquitet|saga|refator/i.test(text)
@@ -67,7 +139,7 @@ export function assess(text, { images = false, contextTokens = 0 } = {}) {
   const simple =
     matched.length === 0 &&
     text.length < 400 &&
-    /^(hi|hello|olá|oi|explain|explique|what is|o que é|resuma|summarize)\b/i.test(text.trim()) &&
+    startsWithWord(text, ...SIMPLE_OPENERS) &&
     !/fix|corrija|refator|implement|código completo|repository|repositório/i.test(text);
   return {
     kind,
