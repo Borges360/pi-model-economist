@@ -2,6 +2,80 @@ import { hash, uid, now, redact, timed, Circuit } from './lib/core.mjs';
 export const difficulties = ['trivial', 'simple', 'moderate', 'complex', 'critical'];
 export const kinds = ['explain', 'search', 'edit', 'test', 'debug', 'design', 'incident'];
 export const risks = ['security', 'production', 'database', 'concurrency', 'data-loss'];
+/** Pi's thinking ladder, weakest first. `ModelThinkingLevel` in pi-ai. */
+export const levels = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+const levelRank = (l) => levels.indexOf(l);
+const weakerOf = (a, b) => (levelRank(b) < levelRank(a) ? b : a);
+const strongerOf = (a, b) => (levelRank(b) > levelRank(a) ? b : a);
+/**
+ * Effort is a routing decision, not a passthrough: the pair the pi virtual model
+ * dispatches is (physical model, physical level), so a cheap model thinking hard
+ * can beat an expensive model thinking little.
+ */
+export function decideEffort(assessment, thinking, selected) {
+  const mode = thinking.mode ?? 'auto';
+  if (mode === 'follow') return { level: selected ?? 'off', source: 'follow' };
+  if (mode === 'fixed') {
+    return { level: thinking.fixed ?? 'medium', source: 'fixed' };
+  }
+  const want =
+    thinking.byDifficulty?.[assessment.difficulty] ??
+    (assessment.simple ? 'low' : 'medium');
+  let level = want;
+  let source = 'difficulty';
+  // Decision: risk raises effort, even above the difficulty mapping.
+  if (assessment.risks?.length && thinking.riskFloor && thinking.riskFloor !== 'off') {
+    if (levelRank(thinking.riskFloor) > levelRank(level)) {
+      level = thinking.riskFloor;
+      source = 'risk';
+    }
+  }
+  // The level the human picked with /thinking caps un-risky work, so the router can
+  // only save money, never buy reasoning the user refused. `off` is pi's default,
+  // not a decision, so `ceiling-if-set` (the default) reads it as "no opinion".
+  const policy = thinking.useSelectedAs ?? 'ceiling-if-set';
+  const capped =
+    policy !== 'ignore' &&
+    selected &&
+    (policy === 'ceiling' || selected !== 'off') &&
+    levelRank(selected) < levelRank(level) &&
+    !(assessment.risks?.length && thinking.riskOverridesSelection !== false);
+  if (capped) {
+    level = selected;
+    source = 'selected-ceiling';
+  }
+  if (thinking.ceiling && thinking.ceiling !== 'max' && levelRank(thinking.ceiling) < levelRank(level)) {
+    level = thinking.ceiling;
+    source = 'ceiling';
+  }
+  return { level, source };
+}
+/**
+ * What a physical model can actually run. `reasoning: false` means only `off`
+ * exists; `thinkingLevelMap` marks a level unsupported with `null`, and a missing
+ * key means the provider default applies, so it stays available.
+ */
+export function supportedLevels(model) {
+  if (!model || model.reasoning !== true) return ['off'];
+  const map = model.thinkingLevelMap ?? {};
+  return levels.filter((l) => l === 'off' || map[l] !== null);
+}
+/** Downgrade to the strongest level a model supports, never upgrade. */
+export function clampLevel(level, model) {
+  const supported = supportedLevels(model);
+  let best = 'off';
+  for (const candidate of supported) {
+    if (levelRank(candidate) <= levelRank(level) && levelRank(candidate) > levelRank(best)) {
+      best = candidate;
+    }
+  }
+  return levelRank(best) === levelRank(level) ? level : best;
+}
+/** Estimated output tokens for one level; reasoning tokens are billed as output. */
+export function effortTokens(thinking, level, fallback) {
+  const byLevel = thinking?.outputTokens ?? {};
+  return Number.isFinite(byLevel[level]) ? byLevel[level] : fallback;
+}
 /**
  * JS `\b` is ASCII-only, so it fires *inside* accented words: "olá" and "o que é"
  * never matched an opener, and a risk word ending in á/é/í/õ was missed at the end
@@ -77,6 +151,38 @@ export const defaults = {
       prohibitOnRisks: risks,
       maxEscalations: 1,
       executionModels: [],
+    },
+    /**
+     * Effort is routed next to the model. `auto` maps difficulty to a level, risk
+     * lifts it, and the level you picked with /thinking caps un-risky work so the
+     * router never buys reasoning you refused. `follow` restores the old behavior
+     * of passing /thinking straight through; `fixed` pins one level.
+     */
+    thinking: {
+      mode: 'auto',
+      fixed: 'medium',
+      byDifficulty: {
+        trivial: 'off',
+        simple: 'low',
+        moderate: 'medium',
+        complex: 'high',
+        critical: 'high',
+      },
+      riskFloor: 'high',
+      ceiling: 'high',
+      useSelectedAs: 'ceiling-if-set',
+      riskOverridesSelection: true,
+      requireReasoningOnRisk: true,
+      outputTokens: { off: 256, minimal: 512, low: 1024, medium: 2048, high: 8192, xhigh: 12288, max: 16384 },
+    },
+    /**
+     * The pool comes from what you scoped in /scoped-models (`enabledModels`),
+     * not from the whole authenticated catalogue.
+     */
+    scope: {
+      source: 'scoped',
+      strict: true,
+      helpVision: true,
     },
   },
 };
@@ -234,16 +340,29 @@ export function tokenEstimate(model, input = 1000, output = 256) {
     return null;
   return (p.input * input + p.output * output) / 1e6;
 }
-export function rank(candidates, assessment, config, history = [], previous = null, overhead = 0) {
+/** Which tier a task demands, so the ranking and the failure message never disagree. */
+export function requiredTier(assessment, config) {
+  return assessment.difficulty === 'critical' || assessment.risks.length
+    ? config.minRiskTier
+    : ['moderate', 'complex'].includes(assessment.difficulty)
+      ? 2
+      : 1;
+}
+export function rank(candidates, assessment, config, history = [], previous = null, overhead = 0, effort = null) {
   const accepted = [],
     rejected = [];
-  const n =
-    assessment.difficulty === 'critical' || assessment.risks.length
-      ? config.minRiskTier
-      : ['moderate', 'complex'].includes(assessment.difficulty)
-        ? 2
-        : 1;
+  const n = requiredTier(assessment, config);
+  const idOf = (m) => `${m.provider}/${m.id}`;
   for (const m of candidates) {
+    // Effort is per model: the same request dispatches a different level on a model
+    // that cannot think, and that is what the turn actually costs. It is resolved
+    // before the gates so a rejection can report the level it would have used.
+    const level = effort
+      ? (effort.levels?.[idOf(m)] ?? clampLevel(effort.requested, m))
+      : null;
+    const outputTokens = effort
+      ? effortTokens(effort.thinking, level, assessment.estimatedOutputTokens)
+      : assessment.estimatedOutputTokens;
     const reason = [];
     if (m.api === 'pi-virtual') reason.push('virtual');
     if (m.auth === false) reason.push('authentication');
@@ -253,14 +372,18 @@ export function rank(candidates, assessment, config, history = [], previous = nu
     if (assessment.requiresTools && m.tools !== true) reason.push('tool-compatibility-unverified');
     if (assessment.requiresImageInput && !m.input?.includes('image')) reason.push('image');
     if (assessment.estimatedInputTokens > m.contextWindow) reason.push('context');
+    if (effort?.requireReasoning && m.reasoning !== true) reason.push('reasoning-unavailable');
     if (m.dataAllowed === false) reason.push('privacy');
     if (reason.length) {
-      rejected.push({ model: `${m.provider}/${m.id}`, reasonCodes: reason });
+      rejected.push({
+        model: idOf(m),
+        reasonCodes: reason,
+        tier: m.tier ?? 1,
+        thinkingLevel: level,
+      });
       continue;
     }
-    const samples = history.filter(
-      (x) => x.model === `${m.provider}/${m.id}` && x.kind === assessment.kind && x.verified,
-    );
+    const samples = history.filter((x) => x.model === idOf(m) && x.kind === assessment.kind && x.verified);
     const measured = samples.length >= config.minHistorySamples;
     const failure = measured
       ? samples.filter((s) => s.accepted === false).length / samples.length
@@ -268,15 +391,14 @@ export function rank(candidates, assessment, config, history = [], previous = nu
     const apiEstimate = tokenEstimate(
       m,
       assessment.estimatedInputTokens,
-      assessment.estimatedOutputTokens,
+      outputTokens,
     );
     const latency = measured
       ? samples.reduce((v, s) => v + (s.durationMs ?? 0), 0) / samples.length
       : (m.latencyMs ?? 1000);
     const recovery =
       apiEstimate === null ? null : apiEstimate * failure * Math.min(config.maxRetries, 2);
-    const cachePenalty =
-      previous && previous !== `${m.provider}/${m.id}` ? config.cacheSwitchPenalty : 0;
+    const cachePenalty = previous && previous !== idOf(m) ? config.cacheSwitchPenalty : 0;
     const expected =
       apiEstimate === null
         ? null
@@ -289,6 +411,8 @@ export function rank(candidates, assessment, config, history = [], previous = nu
       latencyMs: latency,
       cacheSwitchPenalty: cachePenalty,
       expectedTotalCost: expected,
+      thinkingLevel: level,
+      outputTokens,
       samples: samples.length,
       measured,
       failureRate: failure,
