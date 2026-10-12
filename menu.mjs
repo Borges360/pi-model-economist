@@ -29,29 +29,35 @@ export function dashboardItems({ conf, pool, scoped, last, notes = {} }) {
       label: 'Roteamento',
       currentValue: conf.enabled ? 'on' : 'off',
       values: ['on', 'off'],
-      description: 'on roteia cada pedido; off devolve o modelo que você escolheu em /model',
+      description: 'on seleciona economist/auto nesta sessão e nas próximas; off mantém seu /model',
+    },
+    {
+      id: 'cadence',
+      label: 'Quando escolher o modelo',
+      currentValue: conf.cadence ?? 'prompt',
+      values: ['session', 'prompt', 'subagent'],
+      description: ({ session: 'Escolhe o melhor custo-benefício na primeira pergunta e mantém até você trocar /model. Voltar para economist/auto escolhe de novo.', prompt: 'Reavalia cada pergunta pelo contexto e pelo tipo de trabalho. Continuações ficam no mesmo modelo.', subagent: 'Reavalia cada pergunta. Quem cria subagentes recebe um par novo para cada filho que inicia.' })[conf.cadence ?? 'prompt'],
     },
     {
       id: 'mode',
-      label: 'Modo',
+      label: 'Como avaliar a tarefa',
       currentValue: conf.mode,
       values: notes.modes ?? [],
-      description: 'como a dificuldade é descoberta · rules é grátis, hybrid paga só no ambíguo',
+      description: ({ hybrid: 'Regras primeiro; classificador só em pedidos ambíguos.', rules: 'Regras locais sem chamada de classificação.', jev: 'Classificador Jev para avaliar tarefas.', 'small-llm': 'Modelo pequeno classifica tarefas.', learned: 'Aprende com resultados verificados.', manual: 'Você seleciona o modelo manualmente.', off: 'Roteamento desligado.' })[conf.mode] ?? 'Estratégia para avaliar dificuldade e requisitos.',
     },
     {
       id: 'policy',
       label: 'Política',
       currentValue: conf.policy,
       values: notes.policies ?? [],
-      description: 'desempate do ranking · economy, balanced, quality, latency',
+      description: 'economy prioriza preço; balanced equilibra; quality prioriza capacidade; latency prioriza rapidez',
     },
     {
       id: 'thinking',
       label: 'Esforço (thinking)',
       currentValue: thinking.mode ?? 'auto',
       values: ['auto', 'follow', 'fixed'],
-      description:
-        'auto roteia o par (modelo, esforço) · follow respeita seu /thinking · fixed pin um nível',
+      description: 'auto escolhe o esforço pela tarefa; follow usa /thinking; fixed usa Esforço fixo',
     },
     {
       id: 'ceiling',
@@ -59,22 +65,6 @@ export function dashboardItems({ conf, pool, scoped, last, notes = {} }) {
       currentValue: thinking.ceiling ?? 'high',
       values: (notes.levels ?? []).filter((l) => l !== 'off'),
       description: 'auto nunca despacha acima disto, mesmo em tarefa crítica',
-    },
-    {
-      id: 'risk-floor',
-      label: 'Esforço sob risco',
-      currentValue: thinking.riskFloor ?? 'high',
-      values: ['off', ...(notes.levels ?? []).filter((l) => l !== 'off')],
-      description:
-        'risco (produção, segurança, dados) eleva o esforço até aqui, passando o seu /thinking',
-    },
-    {
-      id: 'selected-as',
-      label: 'Seu /thinking vale como',
-      currentValue: thinking.useSelectedAs ?? 'ceiling-if-set',
-      values: ['ceiling-if-set', 'ceiling', 'ignore'],
-      description:
-        'ceiling-if-set: um nível que você escolheu é teto (off é o default do pi, não opinião); ceiling: até off limita; ignore: o router decide',
     },
     {
       id: 'fixed',
@@ -91,39 +81,11 @@ export function dashboardItems({ conf, pool, scoped, last, notes = {} }) {
       description: 'scoped usa só os modelos do /scoped-models; all libera o catálogo autenticado',
     },
     {
-      id: 'scope-strict',
-      label: 'Escopo estrito',
-      currentValue: scope.strict === false ? 'off' : 'on',
-      values: ['on', 'off'],
-      description: 'on rejeita candidato fora do escopo com reason out-of-scope no explain',
-    },
-    {
-      id: 'classifier',
-      label: 'Classificador pago',
-      currentValue: conf.classifier?.enabled ? 'on' : 'off',
-      values: ['on', 'off'],
-      description: 'on classifica o ambíguo; off é sempre grátis (regras determinísticas)',
-    },
-    {
       id: 'pool',
       label: 'Pool de candidatos',
       currentValue: `${pool.length} modelo(s)`,
       submenu: true,
-      description: `editar tier/tools/remover · escopo atual: ${scoped} modelo(s)`,
-    },
-    {
-      id: 'poolAdd',
-      label: 'Adicionar do escopo',
-      currentValue: '—',
-      submenu: true,
-      description: 'modelos do /scoped-models fora do pool, com preço, janela, vision e thinking',
-    },
-    {
-      id: 'poolEdit',
-      label: 'Editar candidato',
-      currentValue: notes.pendingId ?? '—',
-      submenu: true,
-      description: 'tier, tools ou remover do modelo escolhido no pool',
+      description: `abra para escolher um modelo e ajustar tier/tools ou remover · escopo: ${scoped} modelo(s)`,
     },
     {
       id: 'explain',
@@ -132,21 +94,21 @@ export function dashboardItems({ conf, pool, scoped, last, notes = {} }) {
         ? `${shortName(last.selectedModelId)}:${last.selectedThinkingLevel ?? 'off'}`
         : 'nenhuma',
       submenu: true,
-      description: 'assessment, esforço, custo estimado, candidatos e rejeitados',
+      description: 'mostra modelo escolhido, esforço efetivo, estimativa de custo e alternativas rejeitadas',
     },
     {
       id: 'simulate',
       label: 'Simular um pedido',
       currentValue: '—',
       submenu: true,
-      description: 'dry run sem chamar modelo: para onde o pedido iria e quanto custaria',
+      description: 'preveja modelo, esforço e custo para um texto, sem chamada paga',
     },
     {
       id: 'help',
       label: 'Modo linha de comando',
       currentValue: '—',
       submenu: true,
-      description: 'os comandos diretos continuam válidos e têm autocomplete',
+      description: 'veja comandos para configurar opções avançadas fora deste painel',
     },
   ];
 }
@@ -167,7 +129,7 @@ export function explainLines(last, conf) {
     `estimado: ${last.estimatedTotalCostUsd == null ? 'sem preço conhecido' : `$${last.estimatedTotalCostUsd.toFixed(6)}`} · classificador: $${(last.classifierCostUsd ?? 0).toFixed(6)}`,
     `pool ranqueado: ${(last.candidates ?? []).map((c) => `${shortName(c.model)}:${c.thinkingLevel ?? 'off'}`).join(', ') || 'vazio'}`,
     `rejeitados: ${(last.rejected ?? []).map((r) => `${shortName(r.model)} (${r.reasonCodes.join('+')})`).join(', ') || 'nenhum'}`,
-    `política: ${conf.policy} · modo: ${conf.mode} · escopo: ${conf.scope?.source ?? 'scoped'}${conf.scope?.strict === false ? '' : ' (estrito)'}`,
+    `política: ${conf.policy} · avaliação: ${conf.mode} · cadência: ${conf.cadence ?? 'prompt'} · pool: ${conf.scope?.source ?? 'scoped'}`,
   ];
 }
 
@@ -292,7 +254,7 @@ function degrade(ctx, reason) {
  * pi-tui and coding-agent modules in tests; production resolves them lazily.
  */
 export async function runDashboard(deps, injection = {}) {
-  const { ctx, title, items, onChange, menus } = deps;
+  const { ctx, title, items, onChange, onSave, menus } = deps;
   if (ctx.mode !== 'tui' || typeof ctx.ui.custom !== 'function') return false;
   let tuiPkg = injection.tuiPkg ?? host.tui,
     agentPkg = injection.agentPkg ?? host.agent;
@@ -326,7 +288,6 @@ export async function runDashboard(deps, injection = {}) {
     keyText,
   } = agentPkg;
   const changed = [];
-  let pendingId = null;
   await ctx.ui.custom((tuiRef, theme, keybindings, done) => {
     const cancel = (data) => keybindings?.matches?.(data, 'tui.select.cancel') === true;
     /**
@@ -351,7 +312,7 @@ export async function runDashboard(deps, injection = {}) {
       (id, value) => {
         const note = onChange(id, value, (target, replacement) =>
           list.updateValue(target, replacement),
-          pendingId,
+          null,
         );
         // Return the write so a caller (and the tests) can await persistence.
         return Promise.resolve(note).then((text) => {
@@ -401,36 +362,29 @@ export async function runDashboard(deps, injection = {}) {
       };
     };
     const panels = {
-      pool: (_current, close) =>
-        screen(
-          'Pool · escolha um candidato para editar tier, tools ou remover',
-          menus.pool(),
-          (value) => {
-            // pi overwrites the row's currentValue with whatever the submenu closes
-            // with, so the model being edited is remembered here, not on the row.
-            pendingId = value;
-            list.updateValue('poolEdit', value);
-            close(undefined, { navigateTo: 'poolEdit' });
-          },
-          () => close(),
-        ),
-      poolAdd: (_current, close) =>
-        screen(
-          'Modelos do /scoped-models fora do pool',
-          menus.scopeCandidates(),
-          (value) => close(value),
-          () => close(),
-        ),
-      poolEdit: (current, close) =>
-        current
-          ? screen(`Editar ${current}`, menus.candidateRows(current), (value) => close(value), () =>
-              close(),
-            )
-          : textScreen(
-              'Editar candidato',
-              ['Abra "Pool de candidatos" e escolha um modelo primeiro.'],
-              () => close(),
-            ),
+      pool: (_current, close) => {
+        let active;
+        const showPool = () => {
+          active = screen('Pool · escolha um modelo para editar', menus.pool(), open, () => close());
+          tuiRef.requestRender();
+        };
+        const open = (id) => {
+          active = screen(`Editar ${id}`, menus.candidateRows(id), async (value) => {
+            const note = await onChange('poolEdit', value, () => {}, id);
+            if (note) changed.push(note);
+            ctx.ui.notify(note ?? 'Pool atualizado', 'info');
+            list.updateValue('pool', `${menus.pool().length} modelo(s)`);
+            showPool();
+          }, showPool);
+          tuiRef.requestRender();
+        };
+        showPool();
+        return {
+          render: (width) => active.render(width),
+          invalidate: () => active.invalidate(),
+          handleInput: (data) => active.handleInput(data),
+        };
+      },
       explain: (_current, close) => textScreen('Última decisão', menus.explain(), () => close()),
       help: (_current, close) => textScreen('Linha de comando', menus.help(), () => close()),
       simulate: (_current, close) => {
@@ -487,13 +441,18 @@ export async function runDashboard(deps, injection = {}) {
         panel(currentValue === '—' ? undefined : currentValue, close);
     }
     box.addChild(list);
-    // No hint line of our own: the real `SettingsList` already appends its own
-    // ("Enter/Space to change · Esc to cancel"), and a second one reads as noise.
+    box.addChild(new Text(theme.fg('dim', '  Ctrl+S salvar · Esc fechar (mudanças também são salvas ao editar)'), 1, 0));
     box.addChild(new DynamicBorder((str) => theme.fg('accent', str)));
     return {
       render: (width) => box.render(width),
       invalidate: () => box.invalidate(),
       handleInput: (data) => {
+        if (data === '\u0013') {
+          return Promise.resolve(onSave?.()).then((path) => {
+            ctx.ui.notify(`Configuração salva em ${path}`, 'info');
+            tuiRef.requestRender();
+          }).catch((error) => ctx.ui.notify(`Falha ao salvar: ${error.message}`, 'error'));
+        }
         list.handleInput(data);
         tuiRef.requestRender();
       },

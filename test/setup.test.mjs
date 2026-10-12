@@ -154,7 +154,7 @@ test('settings persist and a bare or unknown invocation teaches the grammar', as
   const bare = f.notifications.at(-1);
   // A bare call must read as a status panel, not as a command dump: state first,
   // then the direct commands for clients with no custom TUI screen.
-  assert.match(bare, /Economist · ON · modo rules/);
+  assert.match(bare, /Economist · ON · cadência prompt · avaliação rules/);
   assert.match(bare, /esforço auto \(teto high/);
   assert.match(bare, /pool \d+ modelo\(s\)/);
   assert.match(bare, /\/economist candidates list/);

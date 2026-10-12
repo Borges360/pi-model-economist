@@ -55,6 +55,7 @@ const saved = async (dir) =>
 const readBack = (id, c) =>
   ({
     enabled: c.enabled ? 'on' : 'off',
+    cadence: c.cadence,
     mode: c.mode,
     policy: c.policy,
     classifier: c.classifier?.enabled ? 'on' : 'off',
@@ -73,7 +74,7 @@ test('every value the dashboard offers is accepted by the same table that writes
   await tick();
   const settings = tui.created.settings[0];
   const rows = settings.items.filter((i) => Array.isArray(i.values) && i.values.length);
-  assert.ok(rows.length >= 9, `esperava pelo menos 9 linhas enum, achei ${rows.length}`);
+  assert.ok(rows.length >= 8, `esperava pelo menos 8 linhas enum, achei ${rows.length}`);
   for (const row of rows) {
     for (const value of row.values) await settings.cycle(row.id, value);
     const written = await saved(dir);
@@ -83,12 +84,8 @@ test('every value the dashboard offers is accepted by the same table that writes
       `${row.id}: o painel ofereceu ${JSON.stringify(row.values)} e o último valor não chegou ao arquivo`,
     );
   }
-  // The regression itself: the declared default has to be selectable from the panel.
-  const selectedAs = rows.find((r) => r.id === 'selected-as');
-  assert.ok(
-    selectedAs.values.includes('ceiling-if-set'),
-    'ceiling-if-set é o default declarado e precisa estar na tabela',
-  );
+  assert.deepEqual(rows.find((r) => r.id === 'cadence').values, ['session', 'prompt', 'subagent']);
+  assert.equal(rows.find((r) => r.id === 'selected-as'), undefined);
   await writeFile(join(dir, '.pi', 'pi-suite.yaml'), SEED);
   settings.onCancel();
   await running;
@@ -153,7 +150,7 @@ test('the pi entry point imports the host modules statically and hands them to t
   const entry = await readFile(new URL('../index.ts', import.meta.url), 'utf8');
   assert.match(entry, /import \* as piTui from ['"]@earendil-works\/pi-tui['"]/);
   assert.match(entry, /import \* as piAgent from ['"]@earendil-works\/pi-coding-agent['"]/);
-  assert.match(entry, /install\(pi,\s*\{ tui: piTui, agent: piAgent \}\)/);
+  assert.match(entry, /install\(pi,\s*\{ tui: piTui, agent: piAgent, Type \}\)/);
   const extension = await readFile(new URL('../extension.mjs', import.meta.url), 'utf8');
   assert.match(extension, /provideHost\(injected\.tui, injected\.agent\)/);
 });

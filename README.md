@@ -1,6 +1,6 @@
 # pi-model-economist
 
-Roteamento completo com interface discreta para **Pi 1.1.0 / Node >=20**. Não cria um proxy nem substitui autenticação. Seleção explícita de `/model economist/auto`; modelos físicos selecionados manualmente não são alterados.
+Roteamento completo com interface discreta para **Pi 1.1.0 / Node >=20**. Não cria um proxy nem substitui autenticação. Quando habilitado, seleciona `economist/auto` em sessões novas; também permite seleção explícita por `/model economist/auto`. Escolhas manuais em conversas retomadas e modelos explícitos pela CLI são respeitados.
 
 ## Usar
 
@@ -15,11 +15,11 @@ pi -e ./index.ts
 /economist
 ```
 
-Abre o **painel interativo**: cada chave do roteador na tela com o valor que ela tem
-agora. `Enter`/`Espaço` cicla o valor (e grava na hora), `Esc` volta um nível e, no
- topo, fecha com um resumo do que mudou e em que arquivo. Submenus para o pool de
-candidatos (editar tier/tools, adicionar do escopo, remover), a última decisão e a
-simulação de um pedido digitado ali dentro.
+Abre o **painel interativo**: cada item explica seu efeito. `Enter`/`Espaço` cicla
+uma opção e grava na hora; `Ctrl+S` salva novamente a configuração ativa e confirma
+o caminho; `Esc` volta ou fecha. O pool permite escolher um candidato e editar
+tier/tools/remover na mesma tela; para adicionar use `/economist candidates add` ou
+`/economist setup`. Há telas para última decisão e simulação gratuita.
 
 Onde o cliente não tem tela customizada (JSON, print, RPC sem `custom`), `/economist`
 shows um painel de estado (modo, política, pool, escopo, esforço, última decisão) e
@@ -50,6 +50,30 @@ ao digitar `/economist` e dar Tab mostra cada ação com o que ela faz;` mode` m
 os modos com o significado de cada um; `candidates add` mostra os modelos reais com
 preço e janela de contexto. Um comando errado devolve a gramática inteira.
 
+## Cadência de seleção e subagentes
+
+`/economist cadence session|prompt|subagent` configura **quando** escolher o par
+(modelo, esforço), separadamente de `/economist mode` (como classificar a tarefa):
+
+- `session`: a primeira pergunta escolhe o melhor custo-benefício; o mesmo par
+  fica na sessão, mesmo que o trabalho mude, até o usuário selecionar outro modelo
+  com `/model`. Voltar para `economist/auto` escolhe de novo.
+- `prompt` (padrão): cada pergunta é reavaliada pelo contexto recente e pelo tipo
+  de trabalho. Continuações e retries compatíveis mantêm o par, para preservar
+  cache e assinatura.
+- `subagent`: a sessão principal reavalia como `prompt`. Quem implementa
+  subagentes chama `economist_subagent_model({task})` **antes** de criar cada
+  filho. A ferramenta devolve `{model, thinkingLevel}` sem mudar o pai e sem
+  chamar um modelo; o implementador passa esse par ao filho. Um filho que carrega
+  esta extensão e a configuração também seleciona `economist/auto` ao iniciar
+  sessão nova e avalia o próprio trabalho. Processos que não integram a
+  ferramenta nem carregam a extensão não podem ser roteados por este pacote.
+
+Quando o YAML marca `enabled: true`, sessões **novas** selecionam `economist/auto`
+na inicialização; uma sessão retomada com escolha manual permanece intacta. O
+rodapé interativo resume `AUTO modelo · esforço efetivo` após o primeiro pedido,
+sem repetir o nível virtual `medium`.
+
 ## Esforço (thinking) também é roteado
 
 O par que o pi despacha é **(modelo físico, nível físico)**. Um `qwen:high` barato
@@ -63,7 +87,7 @@ dois e preço a saída com o nível que *aquele* modelo vai realmente rodar
 | `thinking.byDifficulty` | trivial `off`, simple `low`, moderate `medium`, complex/critical `high` | mapa de dificuldade → esforço |
 | `thinking.riskFloor` | `high` | **risco eleva o esforço**: produção, segurança, banco, concorrência, perda de dados |
 | `thinking.ceiling` | `high` | teto absoluto do `auto` |
-| `thinking.useSelectedAs` | `ceiling-if-set` | o nível que você escolheu em `/thinking` vale como teto; `off` é o default do pi e não é tratado como opinião (`ceiling` trata; `ignore` libera o roteador) |
+| `thinking.useSelectedAs` | `ceiling-if-set` | compatibilidade legada; no modo `auto` o nível virtual de `/thinking` é ignorado, pois não representa a escolha física. Use `follow` ou `fixed` para impor um nível. |
 | `thinking.requireReasoningOnRisk` | `true` | tarefa arriscada exige modelo que pensa: os demais saem do ranking com `reasoning-unavailable` |
 | `thinking.outputTokens` | por nível | raciocínio é cobrado como saída, então entra na estimativa de custo |
 
@@ -75,8 +99,8 @@ isso é um **ás**: o roteador usa exatamente esse par naquele modelo.
 `scope.source: scoped` (default) limita os candidatos aos modelos que o `/scoped-models`
 mostra — `ctx.scopedModels`, resolvido de `enabledModels`/`--models`. Sem escopo
 configurado o pi entrega a lista vazia, que significa "tudo é usável", e o pool volta a
-ser o catálogo autenticado. Com `scope.strict: true` um candidato fora do escopo é
-rejeitado com `out-of-scope`, visível em `/economist explain` e `candidates list`.
+ser o catálogo autenticado. Fora do escopo, candidatos são rejeitados com
+`out-of-scope` (mesmo que uma configuração antiga tenha `scope.strict: false`).
 
 Quando a tarefa tem imagem e nenhum modelo do escopo aceita vision, o roteador **não
 falha cego**: pergunta, lista os modelos com vision ordenados pelo custo *desta* task
@@ -95,7 +119,7 @@ economist mode rules
 economist policy economy
 ```
 
-`mode`,` policy`,` classifier`,` classifier-model` e` candidates` persistem no arquivo e
+`cadence`, `mode`, `policy`, `classifier`, `classifier-model` e `candidates` persistem no arquivo e
 entram em efeito na hora (a escrita mergeia o patch na config viva; não peça `/reload`
 para uma mudança que já aconteceu) e escrevem **somente** a própria seção. A lista explícita
 do usuário nunca é sobrescrita: um candidato inválido é nomeado no erro com o conserto.
@@ -106,7 +130,7 @@ Configuração global: `${PI_SUITE_HOME:-~/.pi/agent/pi-suite}/config.yaml`. Pro
 
 ## Interface
 
-`/economist` (painel),` on|off`,` setup`,` mode off|manual|rules|jev|small-llm|hybrid|learned`,` policy economy|balanced|quality|latency`,` thinking auto|follow|fixed`,` ceiling LEVEL`,` risk-floor LEVEL`,` fixed LEVEL`,` selected-as ceiling-if-set|ceiling|ignore`,` scope scoped|all`,` scope-strict on|off`,` classifier on|off`,` classifier-model PROVIDER/ID`,` budget task 0.50 USD`,` candidates list|add|remove`,` explain`,` json`,` simulate "pedido"`,` benchmark --dataset evals/tasks.jsonl`,` help`. Tudo com autocomplete de argumentos e validado pela mesma tabela de campos que o painel, inclusive contra `locked` global.
+`/economist` (painel), `on|off`, `setup`, `cadence session|prompt|subagent`, `mode off|manual|rules|jev|small-llm|hybrid|learned`, `policy economy|balanced|quality|latency`, `thinking auto|follow|fixed`, `ceiling LEVEL`, `fixed LEVEL`, `scope scoped|all`, `classifier on|off`, `classifier-model PROVIDER/ID`,` budget task 0.50 USD`,` candidates list|add|remove`,` explain`,` json`,` simulate "pedido"`,` benchmark --dataset evals/tasks.jsonl`,` help`. Tudo com autocomplete de argumentos e validado pela mesma tabela de campos que o painel, inclusive contra `locked` global.
 
 - Regras geram assessment (tipo, dificuldade, riscos, modalidades, contexto, tokens estimados, sinais). Riscos determinísticos não podem ser relaxados pelo classificador.
 - Jev usa o classificador nativo (`findOfType/classify`); small-LLM usa` streamSimple` com JSON estrito, timeout, limite de geração, redação e circuito de falhas. TypeSafe usa credencial própria. Preço de Jev desconhecido exige uma cotação explícita em` classifier.decisionPrices`, ou fallback gratuito.` auto` escolhe a opção classificadora viável com menor estimativa.
@@ -140,7 +164,6 @@ um `simulate`.
   config muda por causa disso.
 - **A confirmação de escrita não pede mais `/reload`** — o patch já mergeia na config viva.
   Se alguém dependia da linha como dica, o comportamento continua idêntico; só a mensagem saiu.
-- **`selected-as ceiling-if-set` vira selecionável pelos dois caminhos.** Era o default
-  declarado (`thinking.useSelectedAs`) e o painel oferecia, mas a tabela de campos recusava
-  com `Invalid selected-as`. Para voltar ao comportamento anterior, `selected-as ceiling`.
+- **Histórico 0.3.1:** `selected-as` era uma opção do painel; nesta versão foi
+  removida da interface e o nível virtual não limita o esforço automático.
 # pi-model-economist

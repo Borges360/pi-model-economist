@@ -204,9 +204,10 @@ const run = async () => {
     }
     show('painel aberto com /economist (vazio)');
 
-    send(DOWN); // Modo
-    send(DOWN); // Política
-    show('após 2× ↓ (cursor em Política)');
+    send(DOWN); // cadência
+    send(DOWN); // avaliação
+    send(DOWN); // política
+    show('após 3× ↓ (cursor em Política)');
     send(ENTER);
     await waitFor(async () => (await saved()) !== before, 'Enter em Política ter persistido');
     show('após Enter em Política (valor ciclado, aplicado e persistido)');
@@ -216,8 +217,8 @@ const run = async () => {
     if (!/policy: (balanced|quality|latency|economy)/.test(afterPolicy))
       throw Error('o arquivo não traz a chave policy');
 
-    // Submenu de 2 níveis com navigateTo: pool → candidato → poolEdit → tier.
-    for (let i = 3; i < 12; i++) send(DOWN);
+    // Pool → candidato → edição em uma tela aninhada.
+    for (let i = 3; i < 8; i++) send(DOWN);
     show('cursor em "Pool de candidatos"');
     send(ENTER);
     show('submenu pool aberto');
@@ -226,11 +227,9 @@ const run = async () => {
     show('após Esc: voltou para a lista principal — o painel continua aberto');
 
     send(ENTER); // reabre pool
-    send(ENTER); // escolhe o primeiro candidato: done(undefined,{navigateTo:'poolEdit'})
+    send(ENTER); // escolhe o primeiro candidato, abre ações no mesmo submenu
     await new Promise((r) => setImmediate(r));
-    // `settings-list.js:227-233` — navigateTo re-selects the target row AND activates it,
-    // so the second level is already open here; pressing enter again would pick a row.
-    show('segundo nível já aberto pelo navigateTo ("Editar candidato")');
+    show('ações do candidato dentro do Pool');
     for (let i = 0; i < 4; i++) send(DOWN); // tier 1 → tier 5
     send(ENTER);
     await waitFor(
@@ -239,7 +238,9 @@ const run = async () => {
     );
     show('após tier 5 no candidato');
 
-    send(ESC); // no topo, agora fecha
+    send(ESC); // ações → pool
+    send(ESC); // pool → lista principal
+    send(ESC); // fecha
     const summary = await closed;
     console.log('\nFECHAMENTO →', JSON.stringify(summary));
     console.log('NOTIFICAÇÕES DO PAINEL →', JSON.stringify(notes.slice(-4).map(firstLine)));

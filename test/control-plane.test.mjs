@@ -53,11 +53,8 @@ test('every new control has a validated command and persists only its own field'
   const cases = [
     ['thinking follow', { thinking: { mode: 'follow' } }],
     ['ceiling low', { thinking: { ceiling: 'low' } }],
-    ['risk-floor medium', { thinking: { riskFloor: 'medium' } }],
     ['fixed high', { thinking: { fixed: 'high' } }],
-    ['selected-as ignore', { thinking: { useSelectedAs: 'ignore' } }],
     ['scope all', { scope: { source: 'all' } }],
-    ['scope-strict off', { scope: { strict: false } }],
   ];
   for (const [args, patch] of cases) {
     await f.command('economist', args);
@@ -117,7 +114,7 @@ test('a bare /economist reports state and effort, and never dumps the whole gram
   });
   await f.command('economist', '');
   const panel = f.notifications.at(-1);
-  assert.match(panel, /Economist · ON · modo rules · política economy/);
+  assert.match(panel, /Economist · ON · cadência prompt · avaliação rules · política economy/);
   assert.match(panel, /esforço follow/);
   assert.match(panel, /pool 2 modelo\(s\)/);
   assert.match(panel, /última decisão: nenhuma/);

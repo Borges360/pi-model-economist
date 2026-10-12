@@ -17,7 +17,6 @@ import {
   dashboardItems,
   explainLines,
   runDashboard,
-  tierForPool,
   candidateActions,
   shortName,
   provideHost,
@@ -31,7 +30,8 @@ export default function economist(pi, injected = {}) {
   const rt = createRuntime(pi, 'economist', defaults),
     classifiers = new Classifiers();
   let last = null,
-    manualModel = null;
+    manualModel = null,
+    footerTui = null;
   const failedTasks = new Set();
   const init = async (ctx) => {
     await rt.init(ctx);
@@ -60,7 +60,7 @@ export default function economist(pi, injected = {}) {
       ids: new Set(rows.map((s) => s.id)),
       // `model:high` in the scope is an ace: that pair is what the user asked for.
       levels: Object.fromEntries(rows.filter((s) => s.level).map((s) => [s.id, s.level])),
-      strict: active && conf.scope?.strict !== false,
+      strict: active, // scoped means scoped: do not silently admit out-of-scope candidates
     };
   };
   /** Real models this session can dispatch right now, before scoping. */
@@ -324,7 +324,7 @@ export default function economist(pi, injected = {}) {
       pool = rescue ? [...pool, rescue.candidate] : pool;
     }
     const thinking = conf.thinking ?? {};
-    const effortRequest = decideEffort(a, thinking, selectedLevel);
+    const effortRequest = decideEffort(a, thinking, thinking.mode === 'auto' ? undefined : selectedLevel);
     const effortAware = thinking.mode !== 'follow';
     const effort = effortAware
       ? {
@@ -462,6 +462,7 @@ export default function economist(pi, injected = {}) {
     };
     if (!simulate) {
       last = decision;
+      footerTui?.requestRender();
       await rt.store.append('model-routes', {
         ...scope,
         id: decision.id,
@@ -469,16 +470,73 @@ export default function economist(pi, injected = {}) {
         ...decision,
       });
       await rt.emit('model.routed', decision, decision.id);
-      ctx.ui.setStatus(
-        'economist',
-        `${selected.model.id}:${thinkingLevel} · ${decision.phase}`,
-      );
+      ctx.ui.setStatus('economist', undefined); // the concise footer shows the active pair
     }
     return { decision, model: selected.model, thinkingLevel };
   };
   pi.on('session_start', async (_e, ctx) => {
     await init(ctx);
     last = null;
+    footerTui = null;
+    // Config enablement alone does not select a virtual model. A fresh session
+    // starts on Pi's default physical model unless we explicitly select auto.
+    // Never override a model selected in an existing conversation on resume.
+    const explicitCliModel = process.argv.some((arg) => arg === '--model' || arg === '-m' || arg.startsWith('--model='));
+    if (rt.config.modelEconomist.enabled &&
+        !['off', 'manual'].includes(rt.config.modelEconomist.mode) &&
+        !explicitCliModel &&
+        !ctx.sessionManager.getBranch().some((entry) => entry.type === 'message') &&
+        ctx.model?.api !== 'pi-virtual') {
+      const auto = ctx.modelRegistry.find('economist', 'auto');
+      if (auto) {
+        manualModel = ctx.model;
+        await pi.setModel(auto);
+      }
+    }
+    if (ctx.mode === 'tui' && typeof ctx.ui.setFooter === 'function' && injected.tui) {
+      ctx.ui.setFooter((tui, theme, footerData) => {
+        footerTui = tui;
+        const unsubscribe = footerData.onBranchChange?.(() => tui.requestRender());
+        return {
+          dispose() {
+            unsubscribe?.();
+            if (footerTui === tui) footerTui = null;
+          },
+          invalidate() {},
+          render(width) {
+            const branch = footerData.getGitBranch?.();
+            const statuses = footerData.getExtensionStatuses?.() ?? new Map();
+            const extra = [...statuses.entries()].filter(([name]) => name !== 'economist')
+              .map(([, value]) => value).filter(Boolean).join(' · ');
+            const selected = ctx.model?.provider === 'economist' && ctx.model.id === 'auto';
+            const pair = selected
+              ? `AUTO ${last?.selectedModelId ?? 'aguardando pedido'} · esforço ${last?.selectedThinkingLevel ?? 'automático'}`
+              : `${ctx.model?.id ?? 'sem modelo'} · ${ctx.thinkingLevel ?? 'off'}`;
+            const stats = ctx.sessionManager.getBranch()
+              .filter((e) => e.type === 'message' && e.message?.role === 'assistant')
+              .reduce((sum, e) => {
+                sum.input += e.message.usage?.input ?? 0;
+                sum.output += e.message.usage?.output ?? 0;
+                sum.cost += e.message.usage?.cost?.total ?? 0;
+                return sum;
+              }, { input: 0, output: 0, cost: 0 });
+            const fmt = (n) => n < 1000 ? String(n) : `${(n / 1000).toFixed(1)}k`;
+            const ctxUse = ctx.getContextUsage?.();
+            const ctxPart = ctxUse?.percent != null
+              ? ` · ctx ${ctxUse.percent.toFixed(0)}%/${fmt(ctxUse.contextWindow ?? 0)}`
+              : '';
+            const left = theme.fg('dim', `↑${fmt(stats.input)} ↓${fmt(stats.output)} $${stats.cost.toFixed(3)}${ctxPart}${branch ? ` · ${branch}` : ''}`);
+            const right = theme.fg('accent', `${pair}${extra ? ` · ${extra}` : ''}`);
+            const space = width - injected.tui.visibleWidth(left) - injected.tui.visibleWidth(right);
+            if (space < 1) return [
+              injected.tui.truncateToWidth(right, width),
+              injected.tui.truncateToWidth(left, width),
+            ];
+            return [left + ' '.repeat(space) + right];
+          },
+        };
+      });
+    }
   });
   pi.on('message_end', async (e, ctx) => {
     if (e.message.role !== 'assistant' || pi.getCommands?.().some((c) => c.name === 'cost')) return;
@@ -530,7 +588,8 @@ export default function economist(pi, injected = {}) {
     )
       failedTasks.add(`${e.sessionId}/${e.taskId}`);
   });
-  pi.on('session_shutdown', async () => {
+  pi.on('session_shutdown', async (_e, ctx) => {
+    ctx.ui.setFooter?.(undefined);
     unsubscribe?.();
     await rt.dispose();
   });
@@ -573,6 +632,7 @@ export default function economist(pi, injected = {}) {
           estimatedTotalCostUsd: null,
         };
         last = decision;
+        footerTui?.requestRender();
         await rt.store.append('model-routes', { ...scopeOf(ctx), ...decision, occurredAt: now() });
         await rt.emit('model.routed', decision, decision.id);
         return {
@@ -605,14 +665,54 @@ export default function economist(pi, injected = {}) {
         failedTasks.has(taskKey) &&
         (state.escalations ?? 0) < conf.fastPath.maxEscalations;
       if (request.reason === 'continuation' && sticky && !escalate) return stick(request.state);
-      const user = [...request.messages].reverse().find((m) => m.role === 'user');
-      const text =
-        typeof user?.content === 'string'
-          ? user.content
-          : (user?.content ?? [])
+      // A /model away from economist/auto ends the session pin. Pi records that as a
+      // model_change after the virtual-model state that stored the pin. Coming back
+      // to auto chooses again. While no such change exists, the first choice holds.
+      const sessionPinReleased = (choice) => {
+        if (!choice) return false;
+        const branch = ctx.sessionManager?.getBranch?.() ?? [];
+        let matched = -1;
+        for (let i = branch.length - 1; i >= 0; i--) {
+          const entry = branch[i];
+          if (entry?.type !== 'custom' || entry.customType !== 'pi.virtual-model-state') continue;
+          const saved = entry.data?.state?.sessionChoice;
+          if (saved?.modelId === choice.modelId && saved?.thinkingLevel === choice.thinkingLevel) {
+            matched = i;
+            break;
+          }
+        }
+        if (matched < 0) return false;
+        return branch.slice(matched + 1).some(
+          (entry) =>
+            entry?.type === 'model_change' &&
+            !(entry.provider === 'economist' && entry.modelId === 'auto'),
+        );
+      };
+      const released = conf.cadence === 'session' && sessionPinReleased(state.sessionChoice);
+      if (request.reason === 'user' && conf.cadence === 'session' && state.sessionChoice && !released) {
+        const pinned = candidates(ctx).find((m) => modelKey(m) === state.sessionChoice.modelId);
+        if (pinned) return {
+          model: pinned,
+          thinkingLevel: state.sessionChoice.thinkingLevel,
+          state: request.state,
+        };
+      }
+      const messageText = (message) =>
+        typeof message?.content === 'string'
+          ? message.content
+          : (message?.content ?? [])
               .filter((b) => b.type === 'text')
               .map((b) => b.text)
               .join('\n');
+      const userTexts = request.messages
+        .filter((m) => m.role === 'user')
+        .map(messageText)
+        .filter((t) => t.trim());
+      const latest = userTexts.at(-1) ?? '';
+      // Prompt and subagent re-check the current question against the recent
+      // conversation, so a short follow-up still sees the work already in progress.
+      const text =
+        userTexts.length < 2 ? latest : `${userTexts.slice(-4, -1).join('\n').slice(-800)}\n${latest}`;
       const images = request.messages.some(
         (m) => Array.isArray(m.content) && m.content.some((c) => c.type === 'image'),
       );
@@ -646,6 +746,9 @@ export default function economist(pi, injected = {}) {
           phase: result.decision.phase,
           assessment: result.decision.assessment,
           decisionId: result.decision.id,
+          sessionChoice: conf.cadence === 'session'
+            ? { modelId: result.decision.selectedModelId, thinkingLevel: result.thinkingLevel }
+            : undefined,
           retries: request.reason === 'retry' ? (state.retries ?? 0) + 1 : 0,
           escalations: escalate
             ? (state.escalations ?? 0) + 1
@@ -653,6 +756,32 @@ export default function economist(pi, injected = {}) {
               ? 0
               : (state.escalations ?? 0),
         },
+      };
+    },
+  });
+  const CADENCES = [
+    { value: 'session', description: 'escolhe o melhor custo-benefício na primeira pergunta e mantém até você mudar /model' },
+    { value: 'prompt', description: 'reavalia cada pergunta pelo contexto e pelo tipo de trabalho' },
+    { value: 'subagent', description: 'reavalia cada pergunta e avalia o modelo de cada subagente ao iniciar' },
+  ];
+  pi.registerTool({
+    name: 'economist_subagent_model',
+    exposure: 'codemode',
+    label: 'Modelo para subagente',
+    description: 'Avalia modelo e esforço para um subagente que vai começar. Não altera a sessão atual. Quem implementa subagentes chama isto antes de criar cada filho e passa o par retornado a ele.',
+    parameters: injected.Type?.Object({ task: injected.Type.String() }) ??
+      { type: 'object', properties: { task: { type: 'string' } }, required: ['task'], additionalProperties: false },
+    async execute(_id, { task }, _signal, _onUpdate, ctx) {
+      if (typeof task !== 'string' || !task.trim()) throw Error('Descreva a tarefa do subagente');
+      await init(ctx);
+      if (!rt.config.modelEconomist.enabled || rt.config.modelEconomist.cadence !== 'subagent')
+        throw Error('Ative /economist cadence subagent antes de pedir uma recomendação');
+      const { decision } = await decide(task, ctx, { simulate: true, interactive: false });
+      const pair = { model: decision.selectedModelId, thinkingLevel: decision.selectedThinkingLevel };
+      return {
+        content: [{ type: 'text', text: `${pair.model} · esforço ${pair.thinkingLevel}` }],
+        details: pair,
+        structuredContent: pair,
       };
     },
   });
@@ -672,6 +801,7 @@ export default function economist(pi, injected = {}) {
     { value: 'latency', description: 'prefer the fastest capable model' },
   ];
   const MODE_IDS = MODES.map((m) => m.value);
+  const CADENCE_IDS = CADENCES.map((m) => m.value);
   const POLICY_IDS = POLICIES.map((p) => p.value);
   const THINKING_MODES = [
     { value: 'auto', description: 'effort routed with the model, from task difficulty and risk' },
@@ -729,6 +859,11 @@ export default function economist(pi, injected = {}) {
         description: 'guided setup from your authenticated models',
         flags: { '--global': { hint: 'write the global config instead' } },
       },
+      cadence: {
+        hint: 'session|prompt|subagent',
+        description: 'quando reavaliar modelo e esforço',
+        args: [{ values: CADENCES, hint: 'cadência' }],
+      },
       mode: {
         hint: 'MODE',
         description: 'routing strategy',
@@ -749,37 +884,19 @@ export default function economist(pi, injected = {}) {
         description: 'highest effort auto may dispatch',
         args: [{ values: EFFORT_LEVELS, hint: 'level' }],
       },
-      'risk-floor': {
-        hint: 'LEVEL',
-        description: 'effort a risky task must get (off disables the lift)',
-        args: [{ values: [{ value: 'off', description: 'risk never raises effort' }, ...EFFORT_LEVELS], hint: 'level' }],
-      },
       scope: {
         hint: 'scoped|all',
         description: 'pool source: /scoped-models or the whole catalogue',
         args: [{ values: SCOPE_SOURCES, hint: 'source' }],
       },
-      'scope-strict': {
-        hint: 'on|off',
-        description: 'reject candidates outside the scope',
-        args: [
-          {
-            values: [
-              { value: 'on', description: 'out-of-scope candidates are rejected' },
-              { value: 'off', description: 'out-of-scope models stay eligible as last resort' },
-            ],
-            hint: 'on|off',
-          },
-        ],
-      },
       classifier: {
         hint: 'on|off',
-        description: 'paid or LLM classifier',
+        description: 'usar um classificador adicional para tarefas ambíguas',
         args: [
           {
             values: [
               { value: 'on', description: 'classify ambiguous requests' },
-              { value: 'off', description: 'rules only, always free' },
+              { value: 'off', description: 'somente regras, sem custo extra de classificação' },
             ],
             hint: 'on|off',
           },
@@ -922,16 +1039,6 @@ export default function economist(pi, injected = {}) {
           label: shortName(c.value),
           description: c.description,
         })),
-      scopeCandidates: () => {
-        const inPool = new Set(rt.config.modelEconomist.candidates.map(specId));
-        return routableModels(ctx)
-          .filter((r) => !inPool.has(r.value))
-          .map((r) => ({
-            value: r.value,
-            label: shortName(r.value),
-            description: r.description || 'sem anotações',
-          }));
-      },
       candidateRows: (id) =>
         candidateActions(configuredCandidates(ctx).find((c) => c.value === id)),
       explain: () => explainLines(last, conf),
@@ -944,20 +1051,8 @@ export default function economist(pi, injected = {}) {
     const onChange = (id, value, update, target) => {
       if (id === 'enabled') return (value === 'on' ? turnOn : turnOff)({ quiet: true });
       if (id === 'pool') return undefined;
-      if (id === 'poolAdd') {
-        const rows = menus.scopeCandidates();
-        const tier = tierForPool(
-          Math.max(0, rows.findIndex((r) => r.value === value)),
-          Math.max(1, rows.length),
-        );
-        return savePool(
-          [...specs(), { id: value, tier, tools: true }],
-          `adicionado ${value} · tier ${tier}`,
-        );
-      }
       if (id === 'poolEdit') {
-        // The submenu row's own value is the action, so the model comes from the
-        // menu's remembered target, never from the row.
+        // The pool submenu passes the selected model as target.
         if (!target) return Promise.resolve('nenhum candidato selecionado');
         if (value === 'remove') {
           update('poolEdit', '—');
@@ -977,18 +1072,21 @@ export default function economist(pi, injected = {}) {
       return setField(id, value, { quiet: true });
     };
     const title = `Economist · ${conf.enabled ? 'on' : 'off'} · ${conf.mode} · ${conf.policy} · pool ${candidates(ctx).length}/${scope.active ? scope.rows.length : 'all'}`;
-    const opened = await runDashboard({ ctx, title, items, onChange, menus });
+    const opened = await runDashboard({
+      ctx, title, items, onChange, menus,
+      onSave: () => rt.save('modelEconomist', () => rt.config.modelEconomist),
+    });
     if (opened === false) {
       const pool = candidates(ctx);
       return output(ctx, [
-        `Economist · ${conf.enabled ? 'ON' : 'off'} · modo ${conf.mode} · política ${conf.policy}`,
-        `pool ${pool.length} modelo(s)${scope.active ? ` · escopo /scoped-models com ${scope.rows.length}` : ' · catálogo inteiro'} · esforço ${conf.thinking?.mode ?? 'auto'} (teto ${conf.thinking?.ceiling ?? 'high'}, risco ${conf.thinking?.riskFloor ?? 'high'})`,
+        `Economist · ${conf.enabled ? 'ON' : 'off'} · cadência ${conf.cadence ?? 'prompt'} · avaliação ${conf.mode} · política ${conf.policy}`,
+        `pool ${pool.length} modelo(s)${scope.active ? ` · /scoped-models com ${scope.rows.length}` : ' · catálogo inteiro'} · esforço ${conf.thinking?.mode ?? 'auto'} (teto ${conf.thinking?.ceiling ?? 'high'})`,
         last
           ? `última decisão: ${last.selectedModelId}:${last.selectedThinkingLevel ?? 'off'} · ${last.reasonCodes?.join(' · ') ?? ''}`
           : 'última decisão: nenhuma · mande um pedido ou simule abaixo',
         '',
         'Este cliente não tem tela customizada; os comandos diretos funcionam:',
-        '/economist on | off | setup | mode rules | policy economy | thinking follow',
+        '/economist on | off | setup | cadence session|prompt|subagent | mode rules | policy economy',
         '/economist candidates list | candidates add <modelo> <tier> | scope all',
         '/economist simulate "refatorar auth" | explain | json',
       ].join('\n'));
@@ -1003,7 +1101,7 @@ export default function economist(pi, injected = {}) {
   };
   pi.registerCommand('economist', {
     description:
-      'Model routing — (vazio abre o menu) | on | off | setup | mode | policy | thinking | ceiling | risk-floor | scope | classifier | candidates | budget | simulate | explain | help',
+      'Model routing — (vazio abre o menu) | on | off | setup | cadence | mode | policy | thinking | ceiling | scope | candidates | budget | simulate | explain | help',
     getArgumentCompletions: buildCompletions(economistSpec),
     handler: async (args, ctx) => {
       await init(ctx);
@@ -1018,6 +1116,12 @@ export default function economist(pi, injected = {}) {
        * go through it, so a lock or a validation can never be bypassed by one of them.
        */
       const FIELDS = {
+        cadence: {
+          lock: 'cadence',
+          values: CADENCE_IDS,
+          patch: (v) => ({ cadence: v }),
+          note: (v) => `cadência → ${v}`,
+        },
         mode: {
           lock: 'mode',
           values: MODE_IDS,
@@ -1048,39 +1152,17 @@ export default function economist(pi, injected = {}) {
           patch: (v) => ({ thinking: { ceiling: v } }),
           note: (v) => `teto de esforço → ${v}`,
         },
-        'risk-floor': {
-          lock: 'thinking',
-          values: ['off', ...THINKING_LEVELS.filter((l) => l !== 'off')],
-          patch: (v) => ({ thinking: { riskFloor: v } }),
-          note: (v) => `esforço sob risco → ${v}`,
-        },
         fixed: {
           lock: 'thinking',
           values: THINKING_LEVELS,
           patch: (v) => ({ thinking: { fixed: v } }),
           note: (v) => `esforço fixo → ${v}`,
         },
-        'selected-as': {
-          lock: 'thinking',
-          // `ceiling-if-set` is the declared default (routing.mjs) and `validateConfig`
-          // accepts it, so the table has to offer it too: the dashboard row listed the
-          // three values from its own copy of the list and cycling to the default threw
-          // `Invalid selected-as` here. One table, one list of values (rule B).
-          values: ['ceiling-if-set', 'ceiling', 'ignore'],
-          patch: (v) => ({ thinking: { useSelectedAs: v } }),
-          note: (v) => `seu /thinking vale como ${v}`,
-        },
         scope: {
           lock: 'scope',
           values: SCOPE_SOURCES.map((s) => s.value),
           patch: (v) => ({ scope: { source: v } }),
           note: (v) => `fonte do pool → ${v}`,
-        },
-        'scope-strict': {
-          lock: 'scope',
-          values: ['on', 'off'],
-          patch: (v) => ({ scope: { strict: v === 'on' } }),
-          note: (v) => `escopo estrito → ${v}`,
         },
       };
       const lockedField = {
@@ -1114,11 +1196,20 @@ export default function economist(pi, injected = {}) {
           throw Error(
             `Invalid ${id}: ${value}\nUse: ${field.values.join(' | ')}`,
           );
-        if (quiet) {
-          const written = persist(field.patch(value)).then(() => field.note(value));
-          return written;
-        }
-        return apply(field.patch(value), field.note(value));
+        const restoreManual = async () => {
+          if (id === 'mode' && ['manual', 'off'].includes(value) && ctx.model?.provider === 'economist') {
+            const previous = manualModel ?? physicalModels(ctx).find((m) => modelKey(m) === last?.selectedModelId);
+            if (previous) await pi.setModel(previous);
+          }
+        };
+        if (quiet) return persist(field.patch(value)).then(async () => {
+          await restoreManual();
+          return field.note(value);
+        });
+        return apply(field.patch(value), field.note(value)).then(async (note) => {
+          await restoreManual();
+          return note;
+        });
       };
       const turnOn = async ({ quiet = false } = {}) => {
         const live = candidates(ctx);
@@ -1172,7 +1263,8 @@ export default function economist(pi, injected = {}) {
       };
       const turnOff = async ({ quiet = false } = {}) => {
         conf.enabled = false;
-        if (manualModel) await pi.setModel(manualModel);
+        const restore = manualModel ?? physicalModels(ctx).find((m) => modelKey(m) === last?.selectedModelId) ?? physicalModels(ctx)[0];
+        if (ctx.model?.provider === 'economist' && restore) await pi.setModel(restore);
         ctx.ui.setStatus('economist', undefined);
         await persist({ enabled: false });
         const note = 'off · seu modelo manual está restaurado';

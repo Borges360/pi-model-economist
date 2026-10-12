@@ -73,13 +73,13 @@ test('the dashboard opens on a bare /economist and applies enum changes as they 
   await settings.cycle('policy', 'economy');
   await settings.cycle('thinking', 'follow');
   await settings.cycle('ceiling', 'xhigh');
-  await settings.cycle('scope-strict', 'off');
+  await settings.cycle('cadence', 'session');
   const savedConf = (await saved(dir)).modelEconomist;
   assert.equal(savedConf.mode, 'rules');
   assert.equal(savedConf.policy, 'economy');
   assert.equal(savedConf.thinking.mode, 'follow');
   assert.equal(savedConf.thinking.ceiling, 'xhigh');
-  assert.equal(savedConf.scope.strict, false);
+  assert.equal(savedConf.cadence, 'session');
 
   settings.onCancel();
   await running;
@@ -104,35 +104,21 @@ test('pool editing reaches the config through submenu navigation', async (t) => 
   poolSelect.pick('openrouter/mid/model');
   const editSelect = tui.created.select.at(-1);
   assert.ok(editSelect.items.some((i) => i.value === 'tier:4'), 'the edit screen offers tiers');
-  assert.equal(settings.find('poolEdit').currentValue, 'openrouter/mid/model', 'it knows which model');
+  assert.equal(settings.find('poolEdit'), undefined, 'editing happens inside the pool');
   await editSelect.pick('tier:4');
   assert.equal(
     (await saved(dir)).modelEconomist.candidates.find((c) => c.id === 'openrouter/mid/model').tier,
     4,
   );
 
-  settings.open('poolAdd');
-  const addSelect = tui.created.select.at(-1);
-  assert.deepEqual(addSelect.items.map((i) => i.value), ['openrouter/vision/model']);
-  await addSelect.pick('openrouter/vision/model');
-  assert.deepEqual(poolIds((await saved(dir)).modelEconomist), [
-    'openrouter/cheap/model',
-    'openrouter/mid/model',
-    'openrouter/vision/model',
-  ]);
-
-  settings.open('pool');
+  assert.equal(settings.find('poolAdd'), undefined);
   await tui.created.select.at(-1).pick('openrouter/cheap/model');
   await tui.created.select.at(-1).pick('tools:off');
   const afterTools = (await saved(dir)).modelEconomist;
   assert.equal(afterTools.candidates.find((c) => c.id === 'openrouter/cheap/model').tools, false);
-  settings.open('pool');
   await tui.created.select.at(-1).pick('openrouter/cheap/model');
   await tui.created.select.at(-1).pick('remove');
-  assert.deepEqual(poolIds((await saved(dir)).modelEconomist), [
-    'openrouter/mid/model',
-    'openrouter/vision/model',
-  ]);
+  assert.deepEqual(poolIds((await saved(dir)).modelEconomist), ['openrouter/mid/model']);
   settings.onCancel();
   await running;
 });

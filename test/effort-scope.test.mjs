@@ -294,9 +294,14 @@ test('the dashboard reflects live config and the pool helpers stay pure', () => 
   assert.equal(byId.enabled.currentValue, 'off');
   assert.equal(byId.thinking.currentValue, 'follow');
   assert.equal(byId.ceiling.currentValue, 'xhigh');
-  assert.equal(byId['risk-floor'].currentValue, 'medium');
+  assert.equal(byId['risk-floor'], undefined);
+  assert.equal(byId['selected-as'], undefined);
+  assert.equal(byId.cadence.currentValue, 'prompt');
   assert.equal(byId.scope.currentValue, 'all');
-  assert.equal(byId['scope-strict'].currentValue, 'off');
+  assert.equal(byId['scope-strict'], undefined);
+  assert.equal(byId.classifier, undefined);
+  assert.equal(byId.poolAdd, undefined);
+  assert.equal(byId.poolEdit, undefined);
   assert.equal(byId.pool.currentValue, '2 modelo(s)');
   assert.ok(items.every((i) => i.description), 'every row explains itself');
   assert.equal(tierForPool(0, 1), 1);

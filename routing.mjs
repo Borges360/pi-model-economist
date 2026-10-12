@@ -119,6 +119,7 @@ export const defaults = {
   modelEconomist: {
     enabled: true,
     mode: 'hybrid',
+    cadence: 'prompt', // session | prompt | subagent
     policy: 'balanced',
     candidates: [],
     fallbackModel: null,
