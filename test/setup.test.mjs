@@ -108,7 +108,11 @@ test('an empty registry yields an actionable error, never a bare policy failure'
       return true;
     },
   );
-  await assert.rejects(() => f.command('economist', 'setup'), /no authenticated model available/);
+  await assert.rejects(() => f.command('economist', 'setup'), (e) => {
+    assert.match(e.message, /no model available in your scope/);
+    assert.match(e.message, /\/scoped-models/);
+    return true;
+  });
 });
 
 test('an explicit pool is never overwritten; the bad id is named for repair', async (t) => {
@@ -147,7 +151,18 @@ test('settings persist and a bare or unknown invocation teaches the grammar', as
   assert.match(failure, /\/economist simulate PROMPT/);
 
   await f.command('economist', '');
-  assert.match(f.notifications.at(-1), /\/economist setup/);
+  const bare = f.notifications.at(-1);
+  // A bare call must read as a status panel, not as a command dump: state first,
+  // then the direct commands for clients with no custom TUI screen.
+  assert.match(bare, /Economist · ON · cadência prompt · avaliação rules/);
+  assert.match(bare, /esforço auto \(teto high/);
+  assert.match(bare, /pool \d+ modelo\(s\)/);
+  assert.match(bare, /\/economist candidates list/);
+  assert.doesNotMatch(bare, /Unknown \/economist/);
+
+  // An unknown action still teaches the grammar.
+  const unknown = await f.command('economist', 'nonsense').then(() => null, (e) => e.message);
+  assert.match(unknown, /Unknown \/economist nonsense/);
 });
 
 test('model ids come from the live registry, not from a hand-written list', async (t) => {

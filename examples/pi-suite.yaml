@@ -4,6 +4,11 @@ suite:
     type: files
 modelEconomist:
   mode: hybrid
+  # Quando escolher o par (modelo, esforço):
+  # session  — uma escolha na sessão, até /model
+  # prompt   — reavalia cada pergunta
+  # subagent — reavalia cada pergunta e avalia cada subagente ao iniciar
+  cadence: prompt
   policy: balanced
   candidates:
     - id: provider/small-model

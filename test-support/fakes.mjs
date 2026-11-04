@@ -68,6 +68,7 @@ export function fakePi(cwd, models = []) {
       select: async (_title, options) => options?.[0],
       input: async (_title, placeholder) => placeholder ?? 'typed',
       setStatus: () => {},
+      setFooter: (factory) => { ctx.footerFactory = factory; },
     },
     sessionManager: {
       getSessionId: () => 'S1',

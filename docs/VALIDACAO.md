@@ -1,19 +1,40 @@
-# Validação da suíte v0.2.0
+# Validação da suíte
 
 ## Evidência local
 
 Ambiente executado: Windows, Node 24.14.0, Pi 1.1.0.
 
-| Pacote | Testes passando |
-| --- | ---: |
-| pi-model-economist | 13 |
-| pi-acceptance-gate | 10 |
-| pi-loop-guard | 6 |
-| pi-cost-profiler | 7 |
-| pi-mcp-control | 5 |
-| Total | 41 |
+| Pacote | Versão | Testes passando |
+| --- | --- | ---: |
+| pi-model-economist | 0.3.1 | 53 |
+| pi-acceptance-gate | 0.2.0 | 21 |
+| pi-loop-guard | 0.2.0 | 15 |
+| pi-cost-profiler | 0.2.0 | 17 |
+| pi-mcp-control | 0.2.0 | 17 |
+| Total |  | 123 |
 
 Comando em cada diretório: `npm test` (`node --test`).
+
+Em pi-model-economist, o painel é validado contra o host instalado (componentes reais,
+carregador real, nenhuma chamada de modelo):
+
+```sh
+node scripts/smoke-dashboard.mjs
+```
+
+Resultado (resumo; a saída completa lista cada tela renderizada):
+
+```
+pi-tui.Container: function · pi-coding-agent.DynamicBorder: function
+DECISÃO ANTES DO PAINEL → selectedModelId: openrouter/strong/model · selectedThinkingLevel: high
+FECHAMENTO → {"changed":["policy → balanced","cheap/model · tier 5"]}
+DECISÃO DEPOIS DO PAINEL → selectedModelId: openrouter/cheap/model · selectedThinkingLevel: high
+OK: menu abriu, navegou, persistiu e fechou com resumo contra o host real.
+```
+
+Este smoke foi o que expôs os dois bugs que os testes de unidade não viam: `DynamicBorder`
+destruturado do `pi-tui` (o export é do `pi-coding-agent`) e o `await import` preguiçoso do
+host, que o Node resolve nativamente e derruba com `ERR_MODULE_NOT_FOUND`.
 
 No diretório pi-cost-profiler:
 
