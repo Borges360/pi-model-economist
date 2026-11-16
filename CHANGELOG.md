@@ -2,6 +2,13 @@
 
 ## 0.4.0
 
+Resumo da release (2026-11-04):
+
+- Add model cadence by session, prompt, and subagent.
+- Improve routing by selecting effort alongside the model, respecting `/scoped-models`, and opening the configuration panel.
+- Fix `/economist` to open the configuration menu using the correct package host export.
+- Add proactive handoff suggestions guidance to agent instructions.
+
 A unidade de ranking passa a ser a ação `(modelo, esforço)`. `route()`, `assess()`, os filtros de capacidade, o fallback do classificador, o orçamento, o circuito, a fase fast, os gates verificados e o log `model-routes` continuam; o ranking e as políticas foram para `decision.mjs`.
 
 ### Fase 1 — políticas e retry
