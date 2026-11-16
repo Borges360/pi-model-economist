@@ -87,6 +87,38 @@ test('a reload reads the persisted pool and a plain greeting routes to the cheap
   assert.match(lastNote(f2), /openrouter\/cheap\/model/);
 });
 
+test('role preferences route only the matching intent and do not switch the model at configuration time', async (t) => {
+  const { dir, f } = await fresh(t);
+  economist(f.pi);
+  await f.command('economist', 'setup');
+  await f.command('economist', 'mode rules');
+  const strong = f.ctx.modelRegistry.getAll().find((m) => m.id === 'strong/model');
+  strong.reasoning = true;
+  const activationsBeforePreference = f.activated.length;
+  await f.command('economist', 'role reviewer model openrouter/strong/model');
+  await f.command('economist', 'role reviewer effort high');
+  assert.equal(f.activated.length, activationsBeforePreference, 'saving a role preference does not switch an in-flight/current model');
+  const saved = await readSaved(dir);
+  assert.equal(saved.modelEconomist.rolePreferences.reviewer.model, 'openrouter/strong/model');
+  assert.equal(saved.modelEconomist.rolePreferences.reviewer.effort, 'high');
+
+  const routed = await f.pi.virtual.route(
+    { reason: 'user', messages: [{ role: 'user', content: 'test the parser' }], thinkingLevel: 'off' },
+    f.ctx,
+  );
+  assert.equal(routed.state.assessment.kind, 'test');
+  assert.equal(routed.model.id, 'strong/model');
+  assert.equal(routed.thinkingLevel, 'high');
+
+  await f.command('economist', 'thinking fixed');
+  await f.command('economist', 'fixed low');
+  const manuallyFixed = await f.pi.virtual.route(
+    { reason: 'user', messages: [{ role: 'user', content: 'test another parser' }], thinkingLevel: 'off' },
+    f.ctx,
+  );
+  assert.equal(manuallyFixed.thinkingLevel, 'low', 'an explicit global thinking mode overrides role effort preference');
+});
+
 test('/economist on with no candidates self-configures instead of breaking every prompt', async (t) => {
   const { dir, f } = await fresh(t);
   economist(f.pi);

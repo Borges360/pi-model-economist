@@ -1,0 +1,4 @@
+# Fixtures sintéticas revisadas (mesmas exceções de .gitleaks-reviewed.json): texto de falha de ferramenta
+# e entrada fictícia de redact(); nenhum valor autentica nada.
+07aee47f725a16558bf8f029d2815ab1fc8a65cb:test/economist.test.mjs:generic-api-key:261
+07aee47f725a16558bf8f029d2815ab1fc8a65cb:test/economist.test.mjs:generic-api-key:290

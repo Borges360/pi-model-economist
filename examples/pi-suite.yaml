@@ -9,35 +9,62 @@ modelEconomist:
   # prompt   — reavalia cada pergunta
   # subagent — reavalia cada pergunta e avalia cada subagente ao iniciar
   cadence: prompt
+  # economy: menor custo com pSuccess ≥ piso · quality: maior pSuccess
+  # latency: menor p95 com pSuccess ≥ piso · balanced: q* ± successTie, menor custo + espera
   policy: balanced
   candidates:
     - id: provider/small-model
       tier: 1
       tools: true
-      latencyMs: 500
-      priorFailureRate: 0.25
+      latencyMs: 500 # prior de p50/p95 até haver 5 medições
     - id: provider/strong-model
       tier: 3
       tools: true
       latencyMs: 2000
-      priorFailureRate: 0.1
   fallbackModel: provider/strong-model
   minRiskTier: 3
+  # Dinheiro e espera são grandezas separadas; o piso é pSuccess mínimo por dificuldade.
+  objectives:
+    latencyValueUsdPerSecond: 0.01
+    successValueUsd: 1
+    safetyThreshold: 0.9
+    qualityFloor: { trivial: 0.45, simple: 0.55, moderate: 0.7, complex: 0.8, critical: 0.88 }
+    balanced: { successTie: 0.02, softBudgetUsd: null, targetLatencyMs: null }
+    quality: { latencyCapMs: null }
+  # Beta hierárquico só sobre resultados verificados (gate, test, typecheck, exit_code, ci, file_diff, judge confiável).
+  stats: { alpha: 1, beta: 3, halfLifeDays: 30, minSafeSamples: 20, applyCalibration: false }
+  verifiers: { trustedJudges: [] }
+  window: { safetyMargin: 512, toolGrowth: 2048 }
+  # dataPolicy: deny (só enums) | redact (padrão) | allow (ainda redige segredos)
+  executor: { dataPolicy: allow }
+  telemetry: { dataPolicy: redact }
+  learned:
+    deployment: shadow # shadow só registra a exploração; active despacha
+    kappa: 0.15
+    embeddings: off # embedder injetável; desligado por padrão
+    neighborCosine: 0.85
+    preference: false # Bradley-Terry, exige ≥ preferencePairs pares
+    preferencePairs: 20
   classifier:
     enabled: true
     engine: auto
     model: typesafe/jev-latest
     smallLlmCandidates: [provider/classifier-model]
     allowRemote: false # Enable consciously; project/company privacy policy first
+    dataPolicy: redact
+    imageDescriber: { mode: off } # off | local | authorized-remote
     timeoutMs: 2500
     maxInputChars: 12000
+    maxStateChars: 4000
     maxOutputTokens: 256
     maxCostUsdPerDecision: 0.002
+    minUtilityMargin: 0.05 # hybrid/learned: chama só quando o valor da informação paga
+    materialCostGap: 0.25
+    minCalibratedProbability: 0.6
     decisionPrices: {} # Explicit verified USD upper quote for otherwise unpriced Jev
   fastPath:
     enabled: true
-    eligibleDifficulties: [trivial, simple]
-    prohibitOnRisks: [security, production, database, concurrency, data-loss]
+    successMargin: 0.05 # pSuccess ≥ piso + margem no grupo barato
     executionModels: [provider/small-model]
     maxEscalations: 1
 acceptanceGate:

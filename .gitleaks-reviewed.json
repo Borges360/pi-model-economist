@@ -1,0 +1,23 @@
+{
+  "schema": "harness-secret-exceptions/v1",
+  "exceptions": [
+    {
+      "rule": "generic-api-key",
+      "file": "test/economist.test.mjs",
+      "line": 261,
+      "fileSha256": "2e4222773a988d10e3bf7fdb8f35d254e0527f4d346ef1f9a65706b6cdaae190",
+      "justification": "Input fictício de falha de ferramenta usado para comprovar que o estado de roteamento não retém o token sintético; assertions de redaction nas linhas seguintes.",
+      "reviewedBy": "claude/g1-rollout-2026-11-15 (estrutura da linha, sem ler o valor)",
+      "reviewedAt": "2026-11-16T02:49:33.615Z"
+    },
+    {
+      "rule": "generic-api-key",
+      "file": "test/economist.test.mjs",
+      "line": 290,
+      "fileSha256": "2e4222773a988d10e3bf7fdb8f35d254e0527f4d346ef1f9a65706b6cdaae190",
+      "justification": "Texto sintético passado a redact() para testar remoção de dados sensíveis; nenhum valor é usado para autenticação ou conexão.",
+      "reviewedBy": "claude/g1-rollout-2026-11-15 (estrutura da linha, sem ler o valor)",
+      "reviewedAt": "2026-11-16T02:49:33.616Z"
+    }
+  ]
+}

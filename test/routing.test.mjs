@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { assess, choose } from '../routing.mjs';
+import { assess, choose, modelRoleOf } from '../routing.mjs';
 const small = {
   provider: 'p',
   id: 'small',
@@ -24,4 +24,10 @@ test('simple uses cheapest, risky and ambiguous use capable fallback', () => {
 test('no virtual or unconfigured models and image compatibility', () => {
   assert.equal(choose([small, strong], 'hi', { images: true }).selected.id, 'strong');
   assert.throws(() => choose([{ ...small, api: 'pi-virtual' }], 'hi'), /no eligible/);
+});
+
+test('planner, executor, and reviewer roles are deterministic intent shortcuts', () => {
+  assert.equal(modelRoleOf(assess('design a parser')), 'planner');
+  assert.equal(modelRoleOf(assess('edit the parser')), 'executor');
+  assert.equal(modelRoleOf(assess('test the parser')), 'reviewer');
 });

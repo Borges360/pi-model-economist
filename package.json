@@ -1,6 +1,21 @@
 {
   "name": "pi-model-economist",
-  "version": "0.3.1",
+  "description": "Pi extension that routes requests by model capability, risk, quality, cost and latency.",
+  "files": [
+    "index.ts",
+    "extension.mjs",
+    "decision.mjs",
+    "routing.mjs",
+    "menu.mjs",
+    "benchmark.mjs",
+    "lib/",
+    "docs/fluxo-de-decisao.md",
+    "docs/assets/inteiro-mark.svg",
+    "docs/assets/INTEIRO-MARK-LICENSE.txt",
+    "examples/pi-suite.yaml",
+    "CHANGELOG.md"
+  ],
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "engines": {

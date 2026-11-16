@@ -1,169 +1,155 @@
-# pi-model-economist
+# Pi Model Economist
 
-Roteamento completo com interface discreta para **Pi 1.1.0 / Node >=20**. Não cria um proxy nem substitui autenticação. Quando habilitado, seleciona `economist/auto` em sessões novas; também permite seleção explícita por `/model economist/auto`. Escolhas manuais em conversas retomadas e modelos explícitos pela CLI são respeitados.
+Routes eligible Pi requests to a physical model-and-effort pair using configured capability, risk, quality, cost and latency signals. It does not call a model to simulate or replay a benchmark.
 
-## Usar
+**Manifest:** `pi-model-economist` · **version:** `0.4.0` · **private:** `true`
+**Registry status:** not verified; this checkout does not establish an npm release.
+**Runtime:** Node.js `>=20`; Pi is the host. A real-loader/TUI smoke was observed with Pi CLI `1.4.0`; this is an observation, not a support matrix.
+
+## English
+
+### What it does
+
+The extension evaluates a task and lets the Pi host dispatch the selected model. Its ranking unit is `(model, effort)`. Rules and optional classifiers assess a request; policies choose among actions that meet quality, capability, risk and budget constraints. `/economist explain` reports the last decision. The `economist_subagent_model` tool returns model-and-effort advice to an integrating parent and does not change that parent or call a model.
+
+The extension does not guarantee model competence, measured savings or provider availability. Price, quality and latency depend on configured metadata and verified local history. Unpriced cache, time-to-first-token or reasoning terms are not invented.
+
+### Install and run
+
+The manifest marks this package `private: true`. No public npm installation command or registry listing is claimed. For a source checkout whose Pi peer packages are already available, load the extension with:
 
 ```sh
-npm ci --ignore-scripts --legacy-peer-deps
 pi -e ./index.ts
 ```
 
-**Configure dentro do pi, não num editor.** Depois de carregar:
+Run its local unit suite from the repository with `npm test`. The package preview in this change is a local `npm pack --dry-run`; it does not publish or install a release.
 
-```
+### Commands
+
+The root command opens the dashboard:
+
+```text
 /economist
 ```
 
-Abre o **painel interativo**: cada item explica seu efeito. `Enter`/`Espaço` cicla
-uma opção e grava na hora; `Ctrl+S` salva novamente a configuração ativa e confirma
-o caminho; `Esc` volta ou fecha. O pool permite escolher um candidato e editar
-tier/tools/remover na mesma tela; para adicionar use `/economist candidates add` ou
-`/economist setup`. Há telas para última decisão e simulação gratuita.
+Useful actions include:
 
-Onde o cliente não tem tela customizada (JSON, print, RPC sem `custom`), `/economist`
-shows um painel de estado (modo, política, pool, escopo, esforço, última decisão) e
-depois as linhas de comando — nunca um despejo de gramática. Se o host **não expõe** a
-tela que o painel precisa (um export que mudou de pacote, por exemplo), o painel avisa
-**qual** export faltou em vez de sumir em silêncio.
+| Command | Purpose |
+| --- | --- |
+| `/economist setup` | Propose a candidate pool from the current scoped/authenticated model metadata and ask before setup writes. |
+| `/economist on` / `/economist off` | Enable or disable automatic routing. |
+| `/economist cadence` | Choose `session`, `prompt` or `subagent` re-evaluation. |
+| `/economist mode` | Choose `off`, `manual`, `rules`, `jev`, `small-llm`, `hybrid` or `learned` assessment. |
+| `/economist policy` | Choose `economy`, `balanced`, `quality` or `latency` ranking. |
+| `/economist role list` / `/economist role <role> model <provider/model\|clear>` | Set a preferred approved model for Planner, Executor or Reviewer calls. |
+| `/economist role <role> effort <level\|auto>` | Prefer a thinking effort for that role while global thinking is `auto`; `auto` clears the preference. |
+| `/economist role <role> fallback on\|off` | Explicitly allow or refuse another approved candidate when the role preference is infeasible. |
+| `/economist candidates list\|add\|remove` | Inspect or edit the candidate pool. |
+| `/economist thinking auto\|follow\|fixed` | Select how thinking-effort actions are formed. |
+| `/economist budget task\|session\|project` | Configure routing budget limits. |
+| `/economist simulate "task"` | Run a synthetic, free decision simulation. |
+| `/economist benchmark --dataset <file.jsonl>` | Replay an existing measured matrix offline; it does not call a model. |
+| `/economist explain`, `/economist json` | Inspect the latest decision in human-readable or structured form. |
 
-Os componentes de terminal vêm do próprio pi: `index.ts` importa
-`@earendil-works/pi-tui` e `@earendil-works/pi-coding-agent` **estaticamente** e os
-entrega para a extensão. Isso é requisito, não estilo — `await import(...)` de um
-especificador nu dentro de uma extensão é resolvido pelo Node, não pelo mapeamento de
-módulos do host, e morre em `ERR_MODULE_NOT_FOUND`. `node --test` não carrega
-`index.ts`, então a suíte continua rodando sem o host instalado
-(`test-support/fake-tui.mjs` espelha qual pacote exporta o quê).
+Other configuration actions include `mode`, `policy`, `classifier`, `classifier-model`, `scope` and `thinking`. Native Pi argument completion describes valid values. See [the decision flow](docs/fluxo-de-decisao.md) for selection, retries, safety and benchmark details.
 
-```
-/economist setup
-```
+The primary intent maps `design`, `search`, `read` and `explain` to Planner; `test` to Reviewer; and other intents to Executor. A role preference only reorders feasible actions inside the existing candidate pool. Fallback is off by default, and an infeasible preference stops routing with an explicit recovery message. Updating a preference affects a later route and does not call `setModel` or change an in-flight request.
 
-O assistente lê os modelos do escopo da sessão, propõe tiers por preço, pede uma
-confirmação e grava em `.pi/pi-suite.yaml` do projeto (ou no config global quando o
-projeto não é confiável). Ativa `economist/auto` em seguida. `/economist on` sem
-candidatos faz a mesma proposta antes de falhar, em vez de deixar toda requisição
-posterior com erro.
+### Configuration and state
 
-Todo subcomando tem autocomplete de argumentos nativo (`getArgumentCompletions`):
-ao digitar `/economist` e dar Tab mostra cada ação com o que ela faz;` mode` mostra
-os modos com o significado de cada um; `candidates add` mostra os modelos reais com
-preço e janela de contexto. Um comando errado devolve a gramática inteira.
+The extension reads and writes only its `modelEconomist` configuration section. A trusted project can use `.pi/pi-suite.yaml`; the global file is `${PI_SUITE_HOME:-~/.pi/agent/pi-suite}/config.yaml`. Defaults are overridden by global values, project values and then a locked global policy. The `/economist` dashboard defaults to English and offers English or Brazilian Portuguese. The locale is read and saved only as `modelEconomist.locale` in the current trusted project's `.pi/pi-suite.yaml`; it is never inherited from global configuration. Changing language previews the dashboard immediately; Ctrl+S saves the draft, while root Esc warns before discarding it. An untrusted project may preview a language but cannot save that preference.
 
-## Cadência de seleção e subagentes
+Decision history and measured inputs use local JSON/JSONL storage scoped by the canonical Git root. There is no database. The `yaml` dependency parses configuration.
 
-`/economist cadence session|prompt|subagent` configura **quando** escolher o par
-(modelo, esforço), separadamente de `/economist mode` (como classificar a tarefa):
+### Language
 
-- `session`: a primeira pergunta escolhe o melhor custo-benefício; o mesmo par
-  fica na sessão, mesmo que o trabalho mude, até o usuário selecionar outro modelo
-  com `/model`. Voltar para `economist/auto` escolhe de novo.
-- `prompt` (padrão): cada pergunta é reavaliada pelo contexto recente e pelo tipo
-  de trabalho. Continuações e retries compatíveis mantêm o par, para preservar
-  cache e assinatura.
-- `subagent`: a sessão principal reavalia como `prompt`. Quem implementa
-  subagentes chama `economist_subagent_model({task})` **antes** de criar cada
-  filho. A ferramenta devolve `{model, thinkingLevel}` sem mudar o pai e sem
-  chamar um modelo; o implementador passa esse par ao filho. Um filho que carrega
-  esta extensão e a configuração também seleciona `economist/auto` ao iniciar
-  sessão nova e avalia o próprio trabalho. Processos que não integram a
-  ferramenta nem carregam a extensão não podem ser roteados por este pacote.
+The dashboard is localized in English and Brazilian Portuguese. English is the default and fallback for missing or invalid project locale values. Menu copy previews immediately and remains a draft until Ctrl+S; failed saves keep the draft open. Language preference belongs to the current trusted project and does not leak between projects or sessions.
 
-Quando o YAML marca `enabled: true`, sessões **novas** selecionam `economist/auto`
-na inicialização; uma sessão retomada com escolha manual permanece intacta. O
-rodapé interativo resume `AUTO modelo · esforço efetivo` após o primeiro pedido,
-sem repetir o nível virtual `medium`.
+### Privacy and security
 
-## Esforço (thinking) também é roteado
+`dataPolicy` configures handling for the classifier, executor and telemetry separately. Raw system prompts, tool stdout and image bytes are not written to the route log or sent by this extension's classifier path. A live routing decision may be dispatched by Pi to the provider selected in the host; this package does not replace provider authentication or consent. `simulate` and benchmark replay make no model/provider call. Tests use doubles and synthetic data; they do not demonstrate paid or external-provider behavior.
 
-O par que o pi despacha é **(modelo físico, nível físico)**. Um `qwen:high` barato
-frequentemente resolve mais que um `luna:pro:low` caro, então o roteador decide os
-dois e preço a saída com o nível que *aquele* modelo vai realmente rodar
-(`reasoning:false` ou `thinkingLevelMap` com `null` fazem o nível descer, nunca subir).
+### Troubleshooting and limits
 
-| chave | default | o que faz |
-| --- | --- | --- |
-| `thinking.mode` | `auto` | `auto` deriva o nível da dificuldade; `follow` devolve o seu `/thinking` intacto; `fixed` pin `thinking.fixed` |
-| `thinking.byDifficulty` | trivial `off`, simple `low`, moderate `medium`, complex/critical `high` | mapa de dificuldade → esforço |
-| `thinking.riskFloor` | `high` | **risco eleva o esforço**: produção, segurança, banco, concorrência, perda de dados |
-| `thinking.ceiling` | `high` | teto absoluto do `auto` |
-| `thinking.useSelectedAs` | `ceiling-if-set` | compatibilidade legada; no modo `auto` o nível virtual de `/thinking` é ignorado, pois não representa a escolha física. Use `follow` ou `fixed` para impor um nível. |
-| `thinking.requireReasoningOnRisk` | `true` | tarefa arriscada exige modelo que pensa: os demais saem do ranking com `reasoning-unavailable` |
-| `thinking.outputTokens` | por nível | raciocínio é cobrado como saída, então entra na estimativa de custo |
+- Use `/economist explain` to inspect the last decision and its available evidence.
+- Use `/economist candidates list` to check the configured pool and scope.
+- Missing model capability, authentication, health, context, price or budget can make an action infeasible; follow the recovery command in the error instead of relaxing safety limits.
+- `pSuccess` uses verified outcomes and priors. `pSafe` remains unknown until the required risk samples exist. Estimated cost is not an invoice or a savings measurement.
+- The real Pi loader/TUI smoke was observed on Pi CLI `1.4.0` with synthetic model metadata; other host versions and provider integrations are not certified by that smoke.
 
-Se um modelo foi escopado com nível explícito (`openrouter/x:high` no `/scoped-models`),
-isso é um **ás**: o roteador usa exatamente esse par naquele modelo.
+### License
 
-## O pool vem do `/scoped-models`
+The product manifest does not declare a software license, and no product license is asserted here. The bundled INTEIRO mark has a separate MIT notice in [its attribution file](docs/assets/INTEIRO-MARK-LICENSE.txt).
 
-`scope.source: scoped` (default) limita os candidatos aos modelos que o `/scoped-models`
-mostra — `ctx.scopedModels`, resolvido de `enabledModels`/`--models`. Sem escopo
-configurado o pi entrega a lista vazia, que significa "tudo é usável", e o pool volta a
-ser o catálogo autenticado. Fora do escopo, candidatos são rejeitados com
-`out-of-scope` (mesmo que uma configuração antiga tenha `scope.strict: false`).
+## Português (Brasil)
 
-Quando a tarefa tem imagem e nenhum modelo do escopo aceita vision, o roteador **não
-falha cego**: pergunta, lista os modelos com vision ordenados pelo custo *desta* task
-(preço, janela, thinking), ajuda a escolher e pergunta se mantém no pool ou usa só
-desta vez. Recusar uma vez não gera nova pergunta no mesmo session e o erro que sobra
-diz o comando exato de conserto. Em cliente sem UI a pergunta vira o mesmo erro
-acionável. `scope helpVision off` desliga.
+### O que faz
 
-Ajuste fino:
+A extensão avalia a tarefa e permite que o host Pi despache o modelo escolhido. A unidade do ranking é o par `(modelo, esforço)`. Regras e classificadores opcionais avaliam o pedido; políticas selecionam entre ações que atendem aos limites de qualidade, capacidade, risco e orçamento. `/economist explain` mostra a última decisão. A ferramenta `economist_subagent_model` devolve uma sugestão de modelo e esforço a um integrador de subagentes; não altera o agente pai nem chama um modelo.
 
-```
-/economist candidates list
-economist candidates add openrouter/qwen/qwen3-flash 1
-economist candidates remove openrouter/strong/model
-economist mode rules
-economist policy economy
-```
+A extensão não garante competência do modelo, economia medida ou disponibilidade do provedor. Preço, qualidade e latência dependem dos metadados configurados e do histórico local verificado. Termos sem preço — cache, tempo até o primeiro token ou raciocínio — não são inventados.
 
-`cadence`, `mode`, `policy`, `classifier`, `classifier-model` e `candidates` persistem no arquivo e
-entram em efeito na hora (a escrita mergeia o patch na config viva; não peça `/reload`
-para uma mudança que já aconteceu) e escrevem **somente** a própria seção. A lista explícita
-do usuário nunca é sobrescrita: um candidato inválido é nomeado no erro com o conserto.
+### Instalação e execução
 
-Instalação como pacote: `pi install ./pi-model-economist`. Remoção:` pi remove ./pi-model-economist`; selecione um modelo físico para desligar o roteamento imediatamente.
-
-Configuração global: `${PI_SUITE_HOME:-~/.pi/agent/pi-suite}/config.yaml`. Projeto confiável: `.pi/pi-suite.yaml`. Exemplo em` examples/pi-suite.yaml`. Precedência: defaults < global < projeto <` locked` global. Candidatos devem declarar` tier`, compatibilidade` tools`, privacidade/saúde quando aplicável. Não há garantia automática de competência apenas pelo nome do modelo — o registry não publica tool-capability, então` setup` assume compatível e informa como corrigir com `--tools off`.
-
-## Interface
-
-`/economist` (painel), `on|off`, `setup`, `cadence session|prompt|subagent`, `mode off|manual|rules|jev|small-llm|hybrid|learned`, `policy economy|balanced|quality|latency`, `thinking auto|follow|fixed`, `ceiling LEVEL`, `fixed LEVEL`, `scope scoped|all`, `classifier on|off`, `classifier-model PROVIDER/ID`,` budget task 0.50 USD`,` candidates list|add|remove`,` explain`,` json`,` simulate "pedido"`,` benchmark --dataset evals/tasks.jsonl`,` help`. Tudo com autocomplete de argumentos e validado pela mesma tabela de campos que o painel, inclusive contra `locked` global.
-
-- Regras geram assessment (tipo, dificuldade, riscos, modalidades, contexto, tokens estimados, sinais). Riscos determinísticos não podem ser relaxados pelo classificador.
-- Jev usa o classificador nativo (`findOfType/classify`); small-LLM usa` streamSimple` com JSON estrito, timeout, limite de geração, redação e circuito de falhas. TypeSafe usa credencial própria. Preço de Jev desconhecido exige uma cotação explícita em` classifier.decisionPrices`, ou fallback gratuito.` auto` escolhe a opção classificadora viável com menor estimativa.
-- Fast path evita classificação paga para pedidos obviamente simples. Filtra modalidade, janela, ferramentas, riscos e tier. Falha verificada do gate permite escalonamento limitado a `maxEscalations`; uma afirmação do modelo não dispara escalonamento.
-- Ranking inclui API, classificador, recuperação, latência, custo de troca de cache e o **esforço que aquele modelo vai rodar**. Taxas iniciais são **priors configuráveis**, não probabilidades comprovadas. `learned` só usa amostras verificadas suficientes e exploração limitada por prêmio de custo.
-- Continuação e retry de rede mantêm modelo físico. Erros de política não são retentados; context/capability podem requerer nova rota. Estado serializável é preservado pelo virtual model no branch.
-- `simulate` é gratuito e não chama executor/classificador.` benchmark` é replay pareado de registros medidos, com bootstrap reproduzível; não inventa benefícios nem executa uma campanha paga. Formato de dataset em` examples/benchmark.jsonl`.
-
-## Dados e validação
-
-Decisões, alternativas rejeitadas, fallbacks, resultados verificados e auditoria são arquivos **JSON/JSONL**, isolados pelo hash da raiz Git canônica. Nenhum banco de dados. O custo efetivo e as chamadas diretas/classificadoras são contabilizados pelo `pi-cost-profiler`, quando instalado. Sem profiler não há bloqueio financeiro global de todos os provedores: o roteador aplica seu limite próprio e o teto do classificador.
-
-`npm test`: regras, tiers, preço desconhecido, JSON inválido, timeout, continuidade, manuais, persistência, redação e integridade. APIs externas foram testadas com doubles, não com cobranças reais. Os IDs de exemplos são placeholders: escolha IDs efetivamente disponíveis no seu registry.
-
-O painel é validado contra o **host instalado**, não só contra double:
+O manifesto marca o pacote como `private: true`. Não há afirmação de instalação pública pelo npm nem de publicação no registry. Em um checkout cujos pacotes peer do Pi já estejam disponíveis, carregue a extensão com:
 
 ```sh
-node scripts/smoke-dashboard.mjs
+pi -e ./index.ts
 ```
 
-Ele carrega `index.ts` pelo carregador real do pi (jiti + mapeamento de módulos), confere
-qual export vem de qual pacote, monta a tela com os componentes reais e a dirige com bytes
-de terminal (`↓`, `Enter`, `Esc`), provando que o menu abre, cicla, grava, entra no submenu
-de dois níveis e fecha com resumo. Nenhuma chamada de modelo é feita: a decisão mostrada é
-um `simulate`.
+Execute a suíte local com `npm test` na raiz do repositório. A prévia deste pacote usa `npm pack --dry-run`; ela não publica nem instala uma versão.
 
-### Mudanças visíveis na 0.3.1
+### Comandos
 
-- **`/economist` (vazio) passa a abrir o painel.** Antes abria em nenhuma instalação real:
-  `DynamicBorder` era lido do pacote errado e o `await import` do host não resolvia. Nenhuma
-  config muda por causa disso.
-- **A confirmação de escrita não pede mais `/reload`** — o patch já mergeia na config viva.
-  Se alguém dependia da linha como dica, o comportamento continua idêntico; só a mensagem saiu.
-- **Histórico 0.3.1:** `selected-as` era uma opção do painel; nesta versão foi
-  removida da interface e o nível virtual não limita o esforço automático.
-# pi-model-economist
+O comando raiz abre o painel:
+
+```text
+/economist
+```
+
+| Comando | Finalidade |
+| --- | --- |
+| `/economist setup` | Propõe candidatos a partir dos metadados de modelos atuais e pede confirmação antes de gravar. |
+| `/economist on` / `/economist off` | Ativa ou desativa o roteamento automático. |
+| `/economist cadence` | Escolhe reavaliação por `session`, `prompt` ou `subagent`. |
+| `/economist mode` | Escolhe avaliação `off`, `manual`, `rules`, `jev`, `small-llm`, `hybrid` ou `learned`. |
+| `/economist policy` | Escolhe ranking `economy`, `balanced`, `quality` ou `latency`. |
+| `/economist role list` / `/economist role <papel> model <provider/model\|clear>` | Define um modelo aprovado preferido para Planejador, Executor ou Revisor. |
+| `/economist role <papel> effort <nível\|auto>` | Prefere um esforço nesse papel quando o modo global está em `auto`; `auto` limpa a preferência. |
+| `/economist role <papel> fallback on\|off` | Permite ou recusa explicitamente outra ação aprovada quando a preferência não atende aos limites. |
+| `/economist candidates list\|add\|remove` | Consulta ou altera o conjunto de candidatos. |
+| `/economist thinking auto\|follow\|fixed` | Define como são formadas as ações de esforço de raciocínio. |
+| `/economist budget task\|session\|project` | Configura limites de orçamento do roteamento. |
+| `/economist simulate "tarefa"` | Executa uma simulação sintética e gratuita. |
+| `/economist benchmark --dataset <arquivo.jsonl>` | Reproduz offline uma matriz medida existente; não chama um modelo. |
+| `/economist explain`, `/economist json` | Consulta a última decisão em formato legível ou estruturado. |
+
+Também há configurações para `mode`, `policy`, `classifier`, `classifier-model` e `scope`. O autocomplete nativo do Pi mostra os valores disponíveis. Veja o [fluxo de decisão](docs/fluxo-de-decisao.md) para ranking, retries, segurança e benchmark.
+
+A intenção principal mapeia `design`, `search`, `read` e `explain` para Planejador; `test` para Revisor; e as demais intenções para Executor. A preferência só reordena ações viáveis dentro do conjunto de candidatos existente. O fallback fica desligado por padrão; uma preferência inviável interrompe o roteamento com uma orientação explícita. Salvar a preferência vale para uma rota futura e não chama `setModel` nem altera uma chamada em andamento.
+
+### Configuração e estado
+
+A extensão lê e grava somente a seção `modelEconomist`. Um projeto confiável pode usar `.pi/pi-suite.yaml`; o arquivo global fica em `${PI_SUITE_HOME:-~/.pi/agent/pi-suite}/config.yaml`. Defaults recebem overrides global, de projeto e, por último, uma política global bloqueada. O painel `/economist` abre em inglês e oferece inglês ou português brasileiro. O idioma é lido e salvo somente como `modelEconomist.locale` no `.pi/pi-suite.yaml` do projeto confiável atual; ele nunca vem da configuração global. A troca pré-visualiza o painel imediatamente; Ctrl+S salva o rascunho e Esc na raiz avisa antes de descartá-lo. Um projeto não confiável pode pré-visualizar o idioma, mas não salvar essa preferência.
+
+Histórico de decisões e entradas medidas ficam em JSON/JSONL local, isolado pela raiz Git canônica. Não há banco de dados. A dependência `yaml` lê a configuração.
+
+### Idioma
+
+O painel tem textos em inglês e português brasileiro. Inglês é o padrão e o fallback para idioma de projeto ausente ou inválido. A prévia do menu é imediata e fica em rascunho até Ctrl+S; uma falha ao salvar mantém o rascunho aberto. A preferência pertence ao projeto confiável atual e não vaza entre projetos ou sessões.
+
+### Privacidade e segurança
+
+`dataPolicy` configura separadamente o tratamento para classificador, executor e telemetria. Prompts de sistema brutos, saída de ferramentas e bytes de imagem não são gravados no log de roteamento nem enviados pelo caminho de classificação desta extensão. Uma decisão de roteamento ao vivo pode ser despachada pelo Pi ao provedor selecionado no host; o pacote não substitui autenticação ou consentimento do provedor. `simulate` e replay de benchmark não chamam modelos ou provedores. Os testes usam doubles e dados sintéticos; não comprovam comportamento pago ou de provedor externo.
+
+### Diagnóstico e limites
+
+- Use `/economist explain` para examinar a decisão e as evidências disponíveis.
+- Use `/economist candidates list` para conferir pool e escopo.
+- Falta de capacidade, autenticação, saúde, janela de contexto, preço ou orçamento pode tornar uma ação inviável; siga a recuperação indicada em vez de relaxar limites de segurança.
+- `pSuccess` usa resultados verificados e priors. `pSafe` permanece desconhecido até existir a amostra de risco exigida. Custo estimado não é fatura nem medição de economia.
+- O smoke do carregador e do painel reais do Pi foi observado no Pi CLI `1.4.0`, com metadados sintéticos; outras versões do host e integrações com provedores não são certificadas por esse smoke.
+
+### Licença
+
+O manifesto não declara licença de software para o produto; este README não afirma uma. A marca INTEIRO incluída tem aviso MIT separado em [seu arquivo de atribuição](docs/assets/INTEIRO-MARK-LICENSE.txt).
