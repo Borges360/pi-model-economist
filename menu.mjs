@@ -13,6 +13,8 @@
  * lazily so `node --test`, JSON and print modes never need them.
  */
 
+import { localeName, translate } from './lib/i18n.mjs';
+
 /** `openrouter/qwen/turbo` → `qwen/turbo`: only the provider is dropped. */
 export function shortName(id) {
   const parts = String(id ?? '').split('/');
@@ -20,116 +22,171 @@ export function shortName(id) {
 }
 
 /** The main screen, built from live config so the values shown are the truth. */
-export function dashboardItems({ conf, pool, scoped, last, notes = {} }) {
+export function dashboardItems({ conf, pool, scoped, last, notes = {}, locale = 'pt-BR' }) {
+  const t = (key, values) => translate(locale, key, values);
   const thinking = conf.thinking ?? {};
   const scope = conf.scope ?? {};
+  const modeKey = ['hybrid', 'rules', 'jev', 'small-llm', 'learned', 'manual', 'off'].includes(conf.mode)
+    ? `desc.mode.${conf.mode}`
+    : 'desc.mode.fallback';
+  const policyKey = ['economy', 'balanced', 'quality', 'latency'].includes(conf.policy)
+    ? `desc.policy.${conf.policy}`
+    : 'desc.policy.fallback';
   return [
     {
+      id: 'language',
+      label: t('language.row'),
+      currentValue: localeName(locale),
+      submenu: true,
+      description: t('language.description'),
+    },
+    {
       id: 'enabled',
-      label: 'Roteamento',
+      label: t('row.enabled'),
       currentValue: conf.enabled ? 'on' : 'off',
       values: ['on', 'off'],
-      description: 'on seleciona economist/auto nesta sessão e nas próximas; off mantém seu /model',
+      description: t('desc.enabled'),
     },
     {
       id: 'cadence',
-      label: 'Quando escolher o modelo',
+      label: t('row.cadence'),
       currentValue: conf.cadence ?? 'prompt',
       values: ['session', 'prompt', 'subagent'],
-      description: ({ session: 'Escolhe o melhor custo-benefício na primeira pergunta e mantém até você trocar /model. Voltar para economist/auto escolhe de novo.', prompt: 'Reavalia cada pergunta pelo contexto e pelo tipo de trabalho. Continuações ficam no mesmo modelo.', subagent: 'Reavalia cada pergunta. Quem cria subagentes recebe um par novo para cada filho que inicia.' })[conf.cadence ?? 'prompt'],
+      description: t(`desc.cadence.${conf.cadence ?? 'prompt'}`),
     },
     {
       id: 'mode',
-      label: 'Como avaliar a tarefa',
+      label: t('row.mode'),
       currentValue: conf.mode,
       values: notes.modes ?? [],
-      description: ({ hybrid: 'Regras primeiro; classificador só em pedidos ambíguos.', rules: 'Regras locais sem chamada de classificação.', jev: 'Classificador Jev para avaliar tarefas.', 'small-llm': 'Modelo pequeno classifica tarefas.', learned: 'Aprende com resultados verificados.', manual: 'Você seleciona o modelo manualmente.', off: 'Roteamento desligado.' })[conf.mode] ?? 'Estratégia para avaliar dificuldade e requisitos.',
+      description: t(modeKey),
     },
     {
       id: 'policy',
-      label: 'Política',
+      label: t('row.policy'),
       currentValue: conf.policy,
       values: notes.policies ?? [],
-      description: 'economy prioriza preço; balanced equilibra; quality prioriza capacidade; latency prioriza rapidez',
+      description: t(policyKey),
     },
     {
       id: 'thinking',
-      label: 'Esforço (thinking)',
+      label: t('row.thinking'),
       currentValue: thinking.mode ?? 'auto',
       values: ['auto', 'follow', 'fixed'],
-      description: 'auto escolhe o esforço pela tarefa; follow usa /thinking; fixed usa Esforço fixo',
+      description: t('desc.thinking'),
     },
     {
       id: 'ceiling',
-      label: 'Teto de esforço',
+      label: t('row.ceiling'),
       currentValue: thinking.ceiling ?? 'high',
       values: (notes.levels ?? []).filter((l) => l !== 'off'),
-      description: 'auto nunca despacha acima disto, mesmo em tarefa crítica',
+      description: t('desc.ceiling'),
     },
     {
       id: 'fixed',
-      label: 'Esforço fixo',
+      label: t('row.fixed'),
       currentValue: thinking.fixed ?? 'medium',
       values: notes.levels ?? [],
-      description: 'usado quando Esforço (thinking) está em fixed',
+      description: t('desc.fixed'),
     },
     {
       id: 'scope',
-      label: 'Fonte do pool',
+      label: t('row.scope'),
       currentValue: scope.source ?? 'scoped',
       values: ['scoped', 'all'],
-      description: 'scoped usa só os modelos do /scoped-models; all libera o catálogo autenticado',
+      description: t('desc.scope'),
     },
     {
       id: 'pool',
-      label: 'Pool de candidatos',
-      currentValue: `${pool.length} modelo(s)`,
+      label: t('row.pool'),
+      currentValue: t('value.pool', { count: pool.length }),
       submenu: true,
-      description: `abra para escolher um modelo e ajustar tier/tools ou remover · escopo: ${scoped} modelo(s)`,
+      description: t('desc.pool', { count: scoped }),
     },
     {
       id: 'explain',
-      label: 'Última decisão',
+      label: t('row.explain'),
       currentValue: last
         ? `${shortName(last.selectedModelId)}:${last.selectedThinkingLevel ?? 'off'}`
-        : 'nenhuma',
+        : t('value.none'),
       submenu: true,
-      description: 'mostra modelo escolhido, esforço efetivo, estimativa de custo e alternativas rejeitadas',
+      description: t('desc.explain'),
     },
     {
       id: 'simulate',
-      label: 'Simular um pedido',
+      label: t('row.simulate'),
       currentValue: '—',
       submenu: true,
-      description: 'preveja modelo, esforço e custo para um texto, sem chamada paga',
+      description: t('desc.simulate'),
     },
     {
       id: 'help',
-      label: 'Modo linha de comando',
+      label: t('row.help'),
       currentValue: '—',
       submenu: true,
-      description: 'veja comandos para configurar opções avançadas fora deste painel',
+      description: t('desc.help'),
     },
   ];
 }
 
 /** Human-readable last decision, used by the explain submenu. */
-export function explainLines(last, conf) {
+export function explainLines(last, conf, { calibration = null, locale = 'pt-BR' } = {}) {
+  const t = (key, values) => translate(locale, key, values);
   if (!last)
     return [
-      'Nenhuma decisão ainda neste session.',
-      'Mande um pedido, ou use "Simular um pedido" — a simulação não chama modelo nem cobra.',
+      t('explain.empty.1'),
+      t('explain.empty.2'),
     ];
   const a = last.assessment ?? {};
+  const pct = (p) => (Number.isFinite(p) ? `${(p * 100).toFixed(1)}%` : t('value.na'));
+  const usd = (n) => (Number.isFinite(n) ? `$${n.toFixed(6)}` : t('value.noKnownPrice'));
+  const ms = (n) => (Number.isFinite(n) ? `${Math.round(n)} ms` : t('value.na'));
+  const cache =
+    Number.isFinite(last.expectedCacheSavingsUsd) || Number.isFinite(last.expectedCacheLossUsd)
+      ? t('explain.cache', { savings: usd(last.expectedCacheSavingsUsd ?? 0), loss: usd(last.expectedCacheLossUsd ?? 0) })
+      : t('explain.noCacheTerm');
+  const roi =
+    last.classifierRoiUsd == null ? t('value.na') : `${last.classifierRoiUsd >= 0 ? '+' : ''}${last.classifierRoiUsd.toFixed(6)} USD`;
+  const calib = calibration?.n
+    ? t('explain.calibration', {
+        ece: calibration.ece.toFixed(3),
+        count: calibration.n,
+        mode: t(conf.stats?.applyCalibration ? 'explain.calibrationApplied' : 'explain.calibrationReported'),
+      })
+    : t('explain.noCalibrationLine');
+  const risks = (a.risks ?? []).join(', ') || t('value.noneRisk');
   return [
-    `modelo + esforço: ${last.selectedModelId}:${last.selectedThinkingLevel ?? 'off'}`,
-    `motivo: ${(last.reasonCodes ?? []).join(' · ')}`,
-    `tarefa: ${a.kind ?? '?'} / ${a.difficulty ?? '?'} · risco: ${(a.risks ?? []).join(', ') || 'nenhum'}`,
-    `esforço definido por: ${last.effortSource ?? 'n/d'}`,
-    `estimado: ${last.estimatedTotalCostUsd == null ? 'sem preço conhecido' : `$${last.estimatedTotalCostUsd.toFixed(6)}`} · classificador: $${(last.classifierCostUsd ?? 0).toFixed(6)}`,
-    `pool ranqueado: ${(last.candidates ?? []).map((c) => `${shortName(c.model)}:${c.thinkingLevel ?? 'off'}`).join(', ') || 'vazio'}`,
-    `rejeitados: ${(last.rejected ?? []).map((r) => `${shortName(r.model)} (${r.reasonCodes.join('+')})`).join(', ') || 'nenhum'}`,
-    `política: ${conf.policy} · avaliação: ${conf.mode} · cadência: ${conf.cadence ?? 'prompt'} · pool: ${conf.scope?.source ?? 'scoped'}`,
+    t('explain.modelEffort', { value: `${last.selectedModelId}:${last.selectedThinkingLevel ?? 'off'}` }),
+    t('explain.reason', { value: (last.reasonCodes ?? []).join(' · ') || t('value.empty') }),
+    t('explain.taskRisk', { kind: a.kind ?? '?', difficulty: a.difficulty ?? '?', risks }),
+    t('explain.effortSource', { value: last.effortSource ?? t('value.na') }),
+    t('explain.pSuccess', {
+      success: pct(last.pSuccess),
+      floor: pct(last.qualityFloor),
+      safe: last.pSafe == null ? t('explain.noSafeSamples') : pct(last.pSafe),
+      result: last.policyResult ?? t('value.na'),
+    }),
+    t('explain.latency', { p50: ms(last.latencyP50Ms), p95: ms(last.latencyP95Ms) }),
+    t('explain.cost', {
+      predicted: usd(last.predictedCostUsd ?? last.estimatedTotalCostUsd),
+      classifier: usd(last.classifierCostUsd ?? 0),
+      roi,
+    }),
+    cache,
+    t('explain.finalOutcome', { value: last.finalOutcome ?? t('explain.awaitingVerification') }),
+    calib,
+    t('explain.rankedPool', {
+      value: (last.candidates ?? []).map((c) => `${shortName(c.model)}:${c.thinkingLevel ?? 'off'}`).join(', ') || t('value.empty'),
+    }),
+    t('explain.rejected', {
+      value: (last.rejected ?? []).map((r) => `${shortName(r.model)} (${r.reasonCodes.join('+')})`).join(', ') || t('value.noneRisk'),
+    }),
+    t('explain.policy', {
+      policy: conf.policy,
+      mode: conf.mode,
+      cadence: conf.cadence ?? 'prompt',
+      scope: conf.scope?.source ?? 'scoped',
+    }),
   ];
 }
 
@@ -140,36 +197,29 @@ export function tierForPool(index, total) {
 }
 
 /** Actions offered for one pool member. */
-export function candidateActions(current) {
+export function candidateActions(current, locale = 'pt-BR') {
+  const t = (key, values) => translate(locale, key, values);
   const tier = Number(current?.tier) || 1;
   return [
-    ...[1, 2, 3, 4, 5].map((t) => ({
-      value: `tier:${t}`,
-      label: `tier ${t}`,
+    ...[1, 2, 3, 4, 5].map((tierValue) => ({
+      value: `tier:${tierValue}`,
+      label: t('candidate.tier', { tier: tierValue }),
       description:
-        t === tier
-          ? 'valor atual'
-          : t === 1
-            ? 'cumprimentos, buscas, resumos'
-            : t === 2
-              ? 'edits e testes de rotina'
-              : t === 3
-                ? 'debugging complexo e design'
-                : t === 4
-                  ? 'produção e segurança'
-                  : 'o mais forte disponível',
+        tierValue === tier
+          ? t('action.current')
+          : t(`action.tier${tierValue}`),
     })),
     {
       value: 'tools:on',
-      label: 'tools on',
-      description: current?.tools ? 'valor atual' : 'aceita editar/executar nesta tarefa',
+      label: t('action.toolsOn'),
+      description: current?.tools ? t('action.current') : t('action.toolsEnableHelp'),
     },
     {
       value: 'tools:off',
-      label: 'tools off',
-      description: current?.tools === false ? 'valor atual' : 'só respostas; nunca roda trabalho com ferramenta',
+      label: t('action.toolsOff'),
+      description: current?.tools === false ? t('action.current') : t('action.toolsDisableHelp'),
     },
-    { value: 'remove', label: 'remover do pool', description: 'some este modelo da seleção' },
+    { value: 'remove', label: t('action.remove'), description: t('action.removeHelp') },
   ];
 }
 
@@ -249,12 +299,28 @@ function degrade(ctx, reason) {
 }
 
 /**
- * Show the dashboard. Returns false when the host cannot run a custom TUI screen,
- * so the caller falls back to the status panel. `host` argument injects the real
- * pi-tui and coding-agent modules in tests; production resolves them lazily.
+ * Show the dashboard. Changes stay in a draft until the user explicitly saves;
+ * Esc at the root warns before discarding. Returns false when the host cannot run
+ * a custom TUI screen, so the caller falls back to the status panel. `host`
+ * argument injects the real pi-tui and coding-agent modules in tests; production
+ * resolves them lazily.
  */
 export async function runDashboard(deps, injection = {}) {
-  const { ctx, title, items, onChange, onSave, menus } = deps;
+  const {
+    ctx,
+    title,
+    getTitle,
+    items,
+    onChange,
+    onSave,
+    onDiscard,
+    isDirty = () => false,
+    menus,
+    locale = 'pt-BR',
+    getLocale,
+  } = deps;
+  const currentLocale = () => getLocale?.() ?? locale;
+  const t = (key, values) => translate(currentLocale(), key, values);
   if (ctx.mode !== 'tui' || typeof ctx.ui.custom !== 'function') return false;
   let tuiPkg = injection.tuiPkg ?? host.tui,
     agentPkg = injection.agentPkg ?? host.agent;
@@ -277,7 +343,7 @@ export async function runDashboard(deps, injection = {}) {
   if (missing.length)
     return degrade(
       ctx,
-      `faltam exports: ${missing.join(', ')} — este pi não expõe a tela customizada esperada`,
+      `missing exports: ${missing.join(', ')} — this Pi client does not expose the expected custom screen`,
     );
   const { Container, SettingsList, SelectList, Text, Input } = tuiPkg;
   const {
@@ -298,33 +364,117 @@ export async function runDashboard(deps, injection = {}) {
      */
     const navHint =
       typeof keyText === 'function'
-        ? `  ${keyText('tui.select.up')}/${keyText('tui.select.down')} navegar · digite para filtrar · ${keyText('tui.select.confirm')} escolher · ${keyText('tui.select.cancel')} voltar`
-        : '  ↑↓ navegar · digite para filtrar · enter escolher · esc voltar';
+        ? `  ${keyText('tui.select.up')}/${keyText('tui.select.down')} ${t('nav.navigate')} · ${t('nav.filter')} · ${keyText('tui.select.confirm')} ${t('nav.choose')} · ${keyText('tui.select.cancel')} ${t('nav.back')}`
+        : `  ↑↓ ${t('nav.navigate')} · ${t('nav.filter')} · enter ${t('nav.choose')} · esc ${t('nav.back')}`;
     const backHint =
-      typeof keyHint === 'function' ? `  ${keyHint('tui.select.cancel', 'voltar')}` : '  esc voltar';
+      typeof keyHint === 'function' ? `  ${keyHint('tui.select.cancel', t('nav.back'))}` : `  esc ${t('nav.back')}`;
+    let disposed = false;
+    let submenuOpen = false;
+    let discardArmed = false;
+    let saving = false;
+    let operationController;
+    let operationGeneration = 0;
+    const pendingNotes = [];
     const box = new Container();
     box.addChild(new DynamicBorder((str) => theme.fg('accent', str)));
-    box.addChild(new Text(theme.fg('accent', theme.bold ? theme.bold(title) : title), 1, 0));
+    const titleText = new Text('');
+    box.addChild(titleText);
+    const footer = new Text('');
     const list = new SettingsList(
       items,
       Math.min(items.length, 12),
       getSettingsListTheme(),
-      (id, value) => {
-        const note = onChange(id, value, (target, replacement) =>
-          list.updateValue(target, replacement),
-          null,
-        );
-        // Return the write so a caller (and the tests) can await persistence.
-        return Promise.resolve(note).then((text) => {
-          if (text) changed.push(text);
-          ctx.ui.notify(text ?? `${id} → ${value}`, 'info');
-          list.updateValue('pool', `${menus.pool().length} modelo(s)`);
-          tuiRef.requestRender();
-          return text;
-        });
+      async (id, value) => {
+        try {
+          const note = await onChange(id, value, (target, replacement) =>
+            list.updateValue(target, replacement),
+            null,
+          );
+          discardArmed = false;
+          if (note) pendingNotes.push(note);
+          refresh();
+          ctx.ui.notify(note ? t('notice.draft', { note }) : t('notice.updated'), 'info');
+          return note;
+        } catch (error) {
+          ctx.ui.notify(t('notice.notUpdated', { error: error.message }), 'error');
+          refresh();
+          throw error;
+        }
       },
-      () => done({ changed }),
+      () => rootEscape(),
     );
+    const dirty = () => Boolean(isDirty());
+    const refresh = () => {
+      const hasDraft = dirty();
+      const heading = `${getTitle?.() ?? title}${hasDraft ? ` · ${t('title.draft')}` : ''}`;
+      const prompt = hasDraft ? `  ${t('footer.dirty')}` : `  ${t('footer.clean')}`;
+      titleText.setText(theme.fg('accent', theme.bold ? theme.bold(heading) : heading));
+      footer.setText(theme.fg('dim', saving ? `${prompt} · ${t('footer.saving')}` : prompt));
+      tuiRef.requestRender();
+    };
+    const finish = () => {
+      if (disposed) return;
+      disposed = true;
+      operationGeneration++;
+      operationController?.abort(Error('dashboard closed'));
+      operationController = undefined;
+      done({ changed });
+    };
+    const rootEscape = () => {
+      if (saving) {
+        ctx.ui.notify(t('notice.saving'), 'warning');
+        return;
+      }
+      if (!dirty()) {
+        finish();
+        return;
+      }
+      if (!discardArmed) {
+        discardArmed = true;
+        ctx.ui.notify(t('notice.unsaved'), 'warning');
+        tuiRef.requestRender();
+        return;
+      }
+      try {
+        onDiscard?.();
+        pendingNotes.length = 0;
+        discardArmed = false;
+        finish();
+      } catch (error) {
+        discardArmed = false;
+        ctx.ui.notify(t('notice.discardFailed', { error: error.message }), 'error');
+        refresh();
+      }
+    };
+    const save = async () => {
+      if (saving || disposed) return;
+      discardArmed = false;
+      if (!dirty()) {
+        pendingNotes.length = 0;
+        try {
+          const path = await onSave?.();
+          if (!disposed) ctx.ui.notify(path ? t('notice.savedCurrent', { path }) : t('notice.noChanges'), 'info');
+        } catch (error) {
+          if (!disposed) ctx.ui.notify(t('notice.checkFailed', { error: error.message }), 'error');
+        }
+        return;
+      }
+      saving = true;
+      tuiRef.requestRender();
+      try {
+        const path = await onSave?.();
+        if (disposed) return;
+        if (dirty()) throw Error(t('notice.dirtyAfterSave'));
+        if (pendingNotes.length) changed.push(...pendingNotes.splice(0));
+        ctx.ui.notify(path ? t('notice.savedAt', { path }) : t('notice.saved'), 'info');
+      } catch (error) {
+        if (!disposed) ctx.ui.notify(t('notice.saveFailed', { error: error.message }), 'error');
+      } finally {
+        saving = false;
+        if (!disposed) refresh();
+      }
+    };
+    refresh();
     const frame = (heading) => {
       const inner = new Container();
       inner.addChild(new Text(theme.fg('accent', heading), 1, 0));
@@ -362,18 +512,39 @@ export async function runDashboard(deps, injection = {}) {
       };
     };
     const panels = {
+      language: (_current, close) => screen(
+        t('panel.language'),
+        menus.language(),
+        async (value) => {
+          try {
+            const note = await onChange('language', value, (target, replacement) =>
+              list.updateValue(target, replacement),
+            );
+            discardArmed = false;
+            if (note) pendingNotes.push(note);
+            ctx.ui.notify(note ? t('notice.draft', { note }) : t('notice.updated'), 'info');
+            close();
+          } catch (error) {
+            ctx.ui.notify(t('notice.notUpdated', { error: error.message }), 'error');
+          }
+          refresh();
+        },
+        () => close(),
+      ),
       pool: (_current, close) => {
         let active;
         const showPool = () => {
-          active = screen('Pool · escolha um modelo para editar', menus.pool(), open, () => close());
+          active = screen(t('panel.pool'), menus.pool(), open, () => close());
           tuiRef.requestRender();
         };
         const open = (id) => {
-          active = screen(`Editar ${id}`, menus.candidateRows(id), async (value) => {
+          active = screen(t('panel.edit', { id }), menus.candidateRows(id), async (value) => {
             const note = await onChange('poolEdit', value, () => {}, id);
-            if (note) changed.push(note);
-            ctx.ui.notify(note ?? 'Pool atualizado', 'info');
-            list.updateValue('pool', `${menus.pool().length} modelo(s)`);
+            discardArmed = false;
+            if (note) pendingNotes.push(note);
+            ctx.ui.notify(note ? t('notice.draft', { note }) : t('notice.updated'), 'info');
+            list.updateValue('pool', t('value.pool', { count: menus.pool().length }));
+            refresh();
             showPool();
           }, showPool);
           tuiRef.requestRender();
@@ -385,28 +556,46 @@ export async function runDashboard(deps, injection = {}) {
           handleInput: (data) => active.handleInput(data),
         };
       },
-      explain: (_current, close) => textScreen('Última decisão', menus.explain(), () => close()),
-      help: (_current, close) => textScreen('Linha de comando', menus.help(), () => close()),
+      explain: (_current, close) => textScreen(t('panel.explain'), menus.explain(), () => close()),
+      help: (_current, close) => textScreen(t('panel.help'), menus.help(), () => close()),
       simulate: (_current, close) => {
-        const inner = frame('Simular um pedido · confirmar roda, cancelar volta');
-        const input = new Input({ placeholder: 'ex.: refatorar auth e rodar testes' });
+        const inner = frame(t('panel.simulate'));
+        const input = new Input({ placeholder: t('panel.simulatePlaceholder') });
         inner.addChild(input);
         const result = new Text(
-          theme.fg('dim', '  nada sai daqui: nenhum modelo é chamado, nenhuma cobrança acontece'),
+          theme.fg('dim', `  ${t('panel.simulateDisclaimer')}`),
           0,
           0,
         );
         inner.addChild(result);
         let showing = false;
         let pending = null;
+        let generation = 0;
         const run = (text) => {
           if (!text || showing) return pending;
           showing = true;
-          result.setText(theme.fg('dim', '  calculando…'));
-          pending = Promise.resolve(menus.simulate(text))
-            .then((lines) => result.setText(lines.map((l) => `  ${l}`).join('\n')))
-            .catch((error) => result.setText(theme.fg('error', `  ${error.message}`)))
-            .finally(() => tuiRef.requestRender());
+          discardArmed = false;
+          const controller = new AbortController();
+          operationController = controller;
+          const current = ++operationGeneration;
+          generation = current;
+          result.setText(theme.fg('dim', `  ${t('panel.calculating')}`));
+          pending = Promise.resolve(menus.simulate(text, { signal: controller.signal }))
+            .then((lines) => {
+              if (!disposed && generation === operationGeneration && !controller.signal.aborted)
+                result.setText(lines.map((l) => `  ${l}`).join('\n'));
+            })
+            .catch((error) => {
+              if (!disposed && generation === operationGeneration && !controller.signal.aborted)
+                result.setText(theme.fg('error', `  ${t('panel.simulationError', { error: error.message })}`));
+            })
+            .finally(() => {
+              if (generation === operationGeneration) {
+                showing = false;
+                operationController = undefined;
+                if (!disposed) tuiRef.requestRender();
+              }
+            });
           return pending;
         };
         // The host's own Input decides what "submit" means (`tui.input.submit`), so the
@@ -418,8 +607,12 @@ export async function runDashboard(deps, injection = {}) {
           handleInput: (data) => {
             if (cancel(data)) {
               if (showing) {
+                operationGeneration++;
+                generation = -1;
+                operationController?.abort(Error('simulation cancelled'));
+                operationController = undefined;
                 showing = false;
-                result.setText(theme.fg('dim', '  digite outro pedido'));
+                result.setText(theme.fg('dim', `  ${t('panel.simulationCancelled')}`));
                 tuiRef.requestRender();
                 return;
               }
@@ -437,23 +630,38 @@ export async function runDashboard(deps, injection = {}) {
     for (const item of items) {
       if (item.submenu !== true) continue;
       const panel = panels[item.id];
-      item.submenu = (currentValue, close) =>
-        panel(currentValue === '—' ? undefined : currentValue, close);
+      item.submenu = (currentValue, close) => {
+        submenuOpen = true;
+        discardArmed = false;
+        return panel(currentValue === '—' ? undefined : currentValue, (...args) => {
+          submenuOpen = false;
+          discardArmed = false;
+          const result = close(...args);
+          refresh();
+          return result;
+        });
+      };
     }
     box.addChild(list);
-    box.addChild(new Text(theme.fg('dim', '  Ctrl+S salvar · Esc fechar (mudanças também são salvas ao editar)'), 1, 0));
+    box.addChild(footer);
     box.addChild(new DynamicBorder((str) => theme.fg('accent', str)));
     return {
       render: (width) => box.render(width),
       invalidate: () => box.invalidate(),
       handleInput: (data) => {
-        if (data === '\u0013') {
-          return Promise.resolve(onSave?.()).then((path) => {
-            ctx.ui.notify(`Configuração salva em ${path}`, 'info');
-            tuiRef.requestRender();
-          }).catch((error) => ctx.ui.notify(`Falha ao salvar: ${error.message}`, 'error'));
+        if (data === '\u0013' || String(data).toLowerCase() === 'ctrl+s') {
+          return save().finally(() => refresh());
         }
-        list.handleInput(data);
+        if (cancel(data)) {
+          if (submenuOpen) list.handleInput(data);
+          else rootEscape();
+          refresh();
+          return;
+        }
+        if (submenuOpen) list.handleInput(data);
+        else list.handleInput(data);
+        discardArmed = false;
+        refresh();
         tuiRef.requestRender();
       },
     };

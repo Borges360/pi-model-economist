@@ -6,12 +6,12 @@ Ambiente executado: Windows, Node 24.14.0, Pi 1.1.0.
 
 | Pacote | Versão | Testes passando |
 | --- | --- | ---: |
-| pi-model-economist | 0.3.1 | 53 |
+| pi-model-economist | 0.4.0 | 99 |
 | pi-acceptance-gate | 0.2.0 | 21 |
 | pi-loop-guard | 0.2.0 | 15 |
 | pi-cost-profiler | 0.2.0 | 17 |
 | pi-mcp-control | 0.2.0 | 17 |
-| Total |  | 123 |
+| Total |  | 169 |
 
 Comando em cada diretório: `npm test` (`node --test`).
 
@@ -26,9 +26,9 @@ Resultado (resumo; a saída completa lista cada tela renderizada):
 
 ```
 pi-tui.Container: function · pi-coding-agent.DynamicBorder: function
-DECISÃO ANTES DO PAINEL → selectedModelId: openrouter/strong/model · selectedThinkingLevel: high
+DECISÃO ANTES DO PAINEL → selectedModelId: openrouter/strong/model · selectedThinkingLevel: minimal
 FECHAMENTO → {"changed":["policy → balanced","cheap/model · tier 5"]}
-DECISÃO DEPOIS DO PAINEL → selectedModelId: openrouter/cheap/model · selectedThinkingLevel: high
+DECISÃO DEPOIS DO PAINEL → selectedModelId: openrouter/cheap/model · selectedThinkingLevel: minimal
 OK: menu abriu, navegou, persistiu e fechou com resumo contra o host real.
 ```
 
@@ -57,7 +57,7 @@ O primeiro teste inicializa os cinco pacotes juntos no runtime real em RPC, sem 
 - Jev e small-LLM: adaptadores testados com doubles, JSON inválido, indisponibilidade, timeout e redação. Não houve autenticação/cobrança real nestes testes.
 - MCP: autorização, trust, limites, precedência, URLs, stdio e nested calls testados localmente. Servidores remotos de produção não foram acionados.
 - MCPHub local: esquema `mcp_settings.json` confirmado por inspeção de metadados (`mcpServers`, 3 entradas). Adaptador de arquivo, com consentimento, sem supor uma API HTTP não verificada.
-- Benchmark: replay reproduzível de registros medidos fornecidos, não uma campanha paga com 60–100 tarefas. Não há alegação de economia medida.
+- Benchmark: leitura offline de uma matriz já medida (até 1000 linhas), ou replay reproduzível de registros fornecidos; não uma campanha paga. RouterBench não foi baixado e nenhum peso de rede foi commitado. Não há alegação de economia medida.
 - CI Windows/Linux e Node 20/22/24: workflow criado; não executado remotamente nesta sessão.
 - Verificadores Maven/Gradle/Go/infra dependem dos executáveis e contratos reais do projeto. Testes locais de processo/checkers usaram Node.
 

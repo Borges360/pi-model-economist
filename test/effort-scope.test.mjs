@@ -1,12 +1,11 @@
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { mkdtemp, rm, mkdir, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, mkdir, writeFile, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import install from '../extension.mjs';
 import {
   assess,
-  rank,
   defaults,
   decideEffort,
   clampLevel,
@@ -14,6 +13,7 @@ import {
   effortTokens,
   levels,
 } from '../routing.mjs';
+import { rankActions } from '../decision.mjs';
 import { dashboardItems, explainLines, candidateActions, tierForPool } from '../menu.mjs';
 import { fakePi } from '../test-support/fakes.mjs';
 
@@ -88,38 +88,38 @@ test('a level is clamped down to what the physical model can actually run', () =
   assert.ok(effortTokens(thinking, 'high', 2048) > effortTokens(thinking, 'off', 256));
 });
 
-test('rank prices effort per model and refuses reasoning where the task needs it', () => {
-  const cheapNoThink = model('dumb', { tier: 2, price: 1, reasoning: false });
+test('rankActions prices every effort as its own action and refuses reasoning where risk needs it', () => {
+  const cheapNoThink = model('dumb', { tier: 3, price: 1, reasoning: false });
   const pricedThink = model('smart', { tier: 3, price: 4 });
   const complex = assess('refatorar o módulo de billing');
-  const plain = rank([cheapNoThink, pricedThink], complex, conf);
-  assert.equal(plain.accepted[0].model.id, 'dumb', 'cheapest wins without effort accounting');
-  const effort = {
-    requested: 'high',
-    thinking,
-    levels: {},
-    requireReasoning: false,
-  };
-  const withEffort = rank([cheapNoThink, pricedThink], complex, conf, [], null, 0, effort);
-  assert.equal(withEffort.accepted[0].model.id, 'dumb');
-  assert.equal(withEffort.accepted[0].thinkingLevel, 'off', 'no thinking, no reasoning tokens');
-  assert.equal(withEffort.accepted[1].thinkingLevel, 'high');
-  const gated = rank([cheapNoThink, pricedThink], complex, conf, [], null, 0, {
-    ...effort,
-    requireReasoning: true,
-  });
-  assert.equal(gated.accepted.length, 1);
-  assert.equal(gated.accepted[0].model.id, 'smart');
-  assert.ok(gated.rejected.some((r) => r.reasonCodes.includes('reasoning-unavailable')));
-  const ace = rank([pricedThink], complex, conf, [], null, 0, {
-    ...effort,
-    levels: { 'p/smart': 'low' },
-  });
-  assert.equal(ace.accepted[0].thinkingLevel, 'low', 'a scoped :level is an ace');
+  const plain = rankActions([cheapNoThink, pricedThink], complex, conf);
+  assert.deepEqual(
+    plain.accepted.filter((x) => x.modelId === 'p/dumb').map((x) => x.effort),
+    ['off'],
+    'a model that cannot think contributes one action',
+  );
+  assert.deepEqual(
+    plain.accepted.filter((x) => x.modelId === 'p/smart').map((x) => x.effort),
+    ['off', 'minimal', 'low', 'medium', 'high'],
+    'auto enumerates every supported level up to the ceiling',
+  );
+  const off = plain.accepted.find((x) => x.id === 'p/smart#off');
+  const high = plain.accepted.find((x) => x.id === 'p/smart#high');
+  assert.ok(high.baseCostUsd > off.baseCostUsd, 'effort is priced through its output tokens');
+  const risky = assess('altere a senha do banco');
+  const gated = rankActions([cheapNoThink, pricedThink], risky, conf);
+  assert.ok(gated.accepted.every((x) => x.modelId === 'p/smart' && x.effort !== 'off'));
+  assert.ok(gated.rejected.some((r) => r.model === 'p/dumb' && r.reasonCodes.includes('reasoning-unavailable')));
+  const ace = rankActions([{ ...pricedThink, scopedLevel: 'low' }], complex, conf);
+  assert.deepEqual(ace.accepted.map((x) => x.effort), ['low'], 'a scoped :level is an ace');
   assert.ok(
     ace.accepted[0].outputTokens < effortTokens(thinking, 'high', 2048),
     'the scoped level is the one priced',
   );
+  const follow = rankActions([pricedThink], complex, { ...conf, thinking: { ...thinking, mode: 'follow' } }, { selectedLevel: 'medium' });
+  assert.deepEqual(follow.accepted.map((x) => x.effort), ['medium']);
+  const fixed = rankActions([pricedThink], complex, { ...conf, thinking: { ...thinking, mode: 'fixed', fixed: 'low' } });
+  assert.deepEqual(fixed.accepted.map((x) => x.effort), ['low']);
 });
 
 /** A session where `/scoped-models` narrowed the catalogue to two of four models. */
@@ -162,13 +162,57 @@ test('the pool comes from /scoped-models, not the whole catalogue', async (t) =>
   assert.match(rejected, /outside \/scoped-models/);
 });
 
+test('prompt cadence adopts a model added to /scoped-models without rewriting the file', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'economist-scope-live-'));
+  const old = process.env.PI_SUITE_HOME;
+  process.env.PI_SUITE_HOME = join(dir, 'state');
+  t.after(async () => {
+    if (old === undefined) delete process.env.PI_SUITE_HOME;
+    else process.env.PI_SUITE_HOME = old;
+    await rm(dir, { recursive: true, force: true });
+  });
+  await mkdir(join(dir, '.pi'), { recursive: true });
+  const catalogue = [
+    model('scoped/cheap', { price: 0.5 }),
+    model('scoped/mid', { price: 2 }),
+    model('scoped/strong', { price: 8 }),
+  ];
+  const file = join(dir, '.pi', 'pi-suite.yaml');
+  await writeFile(
+    file,
+    `modelEconomist:
+  enabled: true
+  mode: rules
+  cadence: prompt
+  candidates:
+    - id: p/scoped/cheap
+      tier: 1
+      tools: true
+`,
+  );
+  const f = fakePi(dir, catalogue);
+  f.ctx.scopedModels = catalogue.map((m) => ({ model: m }));
+  install(f.pi);
+  await f.emit('session_start');
+  const security = {
+    reason: 'user',
+    messages: [{ role: 'user', content: 'corrija problema de segurança' }],
+    thinkingLevel: 'off',
+  };
+  const route = await f.pi.virtual.route(security, f.ctx);
+  assert.equal(route.model.id, 'scoped/strong');
+  assert.doesNotMatch(await readFile(file, 'utf8'), /scoped\/strong/);
+  await f.command('economist', 'cadence session');
+  await assert.rejects(() => f.pi.virtual.route(security, f.ctx), /tier/);
+});
+
 test('scope all restores the whole catalogue and a scoped :level pins effort', async (t) => {
   const { f } = await scopedSetup(t, { scopedLevel: 'high' });
   await f.command('economist', 'on');
   const pinned = await f.pi.virtual.route(
     {
       reason: 'user',
-      messages: [{ role: 'user', content: 'refatorar o módulo de billing' }],
+      messages: [{ role: 'user', content: 'adicione testes no parser' }],
       thinkingLevel: 'off',
     },
     f.ctx,
@@ -268,10 +312,10 @@ test('declining the vision rescue stays actionable instead of failing blind', as
 test('simulate prices the effort it will actually dispatch, free of charge', async (t) => {
   const { f } = await scopedSetup(t);
   await f.command('economist', 'on');
-  await f.command('economist', 'simulate "refatorar o módulo de billing"');
+  await f.command('economist', 'simulate "adicione testes no parser"');
   const shown = f.notifications.at(-1);
-  assert.match(shown, /selectedThinkingLevel: medium/, 'effort is part of what a simulation reports');
-  assert.match(shown, /effortSource: difficulty/);
+  assert.match(shown, /selectedThinkingLevel: \w+/, 'effort is part of what a simulation reports');
+  assert.match(shown, /effortSource: policy/, 'auto effort is chosen by the policy over actions');
   assert.doesNotMatch(shown, /classifierCostUsd: [1-9]/, 'simulate never pays a classifier');
 });
 

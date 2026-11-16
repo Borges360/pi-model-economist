@@ -58,10 +58,12 @@ test('session pins first route while prompt re-evaluates; auto effort ignores vi
   const first = await f.pi.virtual.route(prompt('oi'), f.ctx);
   assert.equal(first.model.id, 'cheap');
   assert.equal(first.thinkingLevel, 'off');
-  const pinned = await f.pi.virtual.route(prompt('corrija problema de segurança', first.state), f.ctx);
-  assert.equal(pinned.model.id, 'cheap');
+  const pinned = await f.pi.virtual.route(prompt('e agora, resume isso', first.state), f.ctx);
+  assert.equal(pinned.model.id, 'cheap', 'a plain follow-up keeps the session pin');
+  const risky = await f.pi.virtual.route(prompt('corrija problema de segurança', pinned.state), f.ctx);
+  assert.equal(risky.model.id, 'strong', 'a hard risk the pin was not chosen for re-decides');
   await f.command('economist', 'cadence prompt');
-  const rechecked = await f.pi.virtual.route(prompt('corrija problema de segurança', pinned.state), f.ctx);
+  const rechecked = await f.pi.virtual.route(prompt('corrija problema de segurança', first.state), f.ctx);
   assert.equal(rechecked.model.id, 'strong');
 });
 
@@ -129,7 +131,7 @@ test('Ctrl+S persists the currently configured section in the real menu callback
   await new Promise((r) => setImmediate(r));
   await f.screen.handleInput('\u0013');
   assert.match(await readFile(join(dir, '.pi', 'pi-suite.yaml'), 'utf8'), /enabled: true/);
-  assert.match(f.notifications.join('\n'), /Configuração salva/);
+  assert.match(f.notifications.join('\n'), /Settings currently saved/);
   tui.created.settings[0].onCancel();
   await running;
 });
@@ -165,12 +167,12 @@ test('the footer shows one AUTO pair, never the repeated virtual medium', async 
   await f.pi.virtual.route({ ...prompt('continue', routed.state), reason: 'continuation', previous: routed }, f.ctx);
   assert.equal(renders, 2, 'a sticky continuation also redraws the footer');
   const line = footer.render(120)[0];
-  assert.match(line, /AUTO fake\/strong · esforço high/);
+  assert.match(line, /AUTO fake\/strong · esforço minimal/);
   assert.doesNotMatch(line, /medium/, 'the virtual medium must not leak into the footer');
   assert.doesNotMatch(line, /should-not-leak/, 'economist status is not re-shown beside AUTO');
   assert.equal(line.split('AUTO').length - 1, 1, 'one AUTO label only');
   const narrow = footer.render(40);
-  assert.match(narrow[0], /AUTO fake\/strong · esforço high/);
+  assert.match(narrow[0], /AUTO fake\/strong · esforço minimal/);
   assert.ok(narrow.every((row) => row.length <= 40));
   assert.match(narrow[1], /feature\/footer/);
   await f.pi.setModel(models[0]);

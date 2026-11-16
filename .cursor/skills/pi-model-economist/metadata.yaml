@@ -1,0 +1,6 @@
+schema: harness/skill-metadata/v1
+id: pi-model-economist
+version: 1.0.0
+owner: pi-model-economist
+source: "AGENTS.md, README.md, docs/fluxo-de-decisao.md, package.json, index.ts, extension.mjs, decision.mjs, routing.mjs, benchmark.mjs"
+scope: "product-local; Pi, Codex and Cursor"
