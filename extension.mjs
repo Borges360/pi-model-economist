@@ -10,6 +10,7 @@ import {
   uid,
   hash,
   safePath,
+  yamlFile,
   now,
   redact,
 } from './lib/core.mjs';
@@ -63,6 +64,7 @@ import {
   candidateActions,
   shortName,
   provideHost,
+  runOperation,
 } from './menu.mjs';
 import {
   candidateDescription,
@@ -74,6 +76,12 @@ import {
 } from './lib/i18n.mjs';
 import { readFile } from 'node:fs/promises';
 import { benchmark, benchmarkMatrix } from './benchmark.mjs';
+import { ContextEconomics, registerEconomicsTools } from './context/runtime.mjs';
+import { PRESETS, CONTROLS, STAGES, presetPatch, migrationPreview } from './lib/v2-config.mjs';
+import { switchDecision, contextualBandit, costCascade } from './routing/adaptive.mjs';
+import { evaluateOffline, readMatrix } from './learning/offline.mjs';
+import { economicsLines, economicsHeader } from './lib/v2-ui.mjs';
+import { remainingBudgets } from './economics/operations.mjs';
 /** What a parent may tell the router about a child; nothing here is free text that leaves the machine. */
 const ENVELOPE_SCHEMA = {
   type: 'object',
@@ -126,12 +134,15 @@ export default function economist(pi, injected = {}) {
   provideHost(injected.tui, injected.agent);
   const rt = createRuntime(pi, 'economist', defaults),
     classifiers = new Classifiers();
+  const economics = new ContextEconomics(pi, rt, injected);
   let last = null,
     manualModel = null,
     footerTui = null;
   const failedTasks = new Set();
   const init = async (ctx) => {
+    economics.beforeInit(ctx);
     await rt.init(ctx);
+    await economics.init(ctx);
     const env = process.env.PI_ECONOMIST_MODELS;
     if (env && !rt.config.modelEconomist.candidates.length)
       rt.config.modelEconomist.candidates = env
@@ -383,10 +394,9 @@ export default function economist(pi, injected = {}) {
       throw Error('qualityFloorOverride must be a number in (0, 1]');
     const scope = scopeOf(ctx);
     const calls = await rt.store.rows('model-calls');
-    const spentBefore = calls
-      .filter((c) => (scope.taskId ? c.taskId === scope.taskId : c.sessionId === scope.sessionId))
-      .reduce((n, c) => n + (c.observedCostUsd ?? c.estimatedCostUsd ?? 0), 0);
-    const remaining = Number.isFinite(conf.budgetUsd) ? conf.budgetUsd - spentBefore : Infinity;
+    const budget = remainingBudgets(conf, calls, economics.operations.rows, scope);
+    if (!simulate && budget.remainingUsd === null) throw Error('Economist budget cannot be verified because a previous operation cost is unknown');
+    const remaining = budget.remainingUsd ?? Infinity;
     if (!simulate && remaining <= 0)
       throw Error('Economist task budget exceeded before classification');
     const describerMode = conf.classifier.imageDescriber?.mode ?? 'off';
@@ -484,6 +494,10 @@ export default function economist(pi, injected = {}) {
     const minRiskTier = Math.max(conf.minRiskTier, forceTier ?? 0);
     const rconf = { ...conf, minRiskTier };
     const env = {
+      economics: await economics.active(ctx) ? {
+        ledger: economics.ledger, scopeKey: m => economics.scopeFor(m), plan: economics.plan, recoveryCosts: m => economics.recoveryCosts(m),
+        cacheEnabled: conf.cache.enabled,
+      } : null,
       outcomes,
       calls,
       sessionCalls,
@@ -675,7 +689,7 @@ export default function economist(pi, injected = {}) {
       modelPreferred: lockRoleModel,
       effortPreferred: lockRoleEffort,
     });
-    const bandit = explore(explorationActions, greedy, {
+    const bandit = conf.adaptive.bandit === 'off' ? { shadowChoice: null, exploreChoice: null } : explore(explorationActions, greedy, {
       policy: conf.policy,
       objectives,
       kappa: conf.learned?.kappa ?? 0.15,
@@ -686,7 +700,7 @@ export default function economist(pi, injected = {}) {
     });
     let selected = greedy;
     if (
-      conf.learned?.deployment === 'active' &&
+      conf.preset === 'custom' && conf.learned?.deployment === 'active' &&
       bandit.shadowChoice &&
       bandit.shadowChoice.id !== greedy.id
     ) {
@@ -702,6 +716,23 @@ export default function economist(pi, injected = {}) {
         selected = bandit.shadowChoice;
         reasonCodes.push('explored');
       }
+    }
+    const activeEconomics = !simulate && await economics.active(ctx);
+    const floorActions = sel.ranked.filter(x => x.pSuccess >= floor && (x.pSafe === null || x.pSafe >= (objectives.safetyThreshold ?? 0.9)));
+    let adaptiveBandit = conf.adaptive.bandit !== 'off' && conf.rollout.stage !== 'observe'
+      ? contextualBandit(explorationActions, { ...selected, qualityFloor: floor, safetyThreshold: objectives.safetyThreshold }, outcomes,
+        { ...conf.adaptive, family: greedy.family, hardRisk: a.risks.length > 0, maxPremium: conf.maxExplorationPremium }) : null;
+    let switchPlan = null;
+    if (activeEconomics) {
+      if (conf.adaptive.algorithm === 'cascade' && !lockRoleModel && !lockRoleEffort)
+        selected = costCascade(floorActions, { floor, safetyThreshold: objectives.safetyThreshold }) ?? selected;
+      if (conf.adaptive.algorithm === 'bandit' && conf.adaptive.bandit === 'active' && adaptiveBandit?.eligible && (await economics.proof())?.eligible)
+        selected = adaptiveBandit.choice;
+      switchPlan = switchDecision(floorActions, selected, { currentId: last ? actionId(last.selectedModelId, last.selectedThinkingLevel) : null,
+        turnsSinceSwitch: economics.turn - economics.lastSwitchTurn, hardRisk: a.risks.length > 0 || reason === 'retry' || checkpoint.length > 0,
+        preferred: lockRoleModel || lockRoleEffort || conf.policy === 'quality', config: conf.routing.switch });
+      selected = switchPlan.selected;
+      reasonCodes.push(switchPlan.reason);
     }
     const effortSource = forceEffort
       ? 'retry'
@@ -756,6 +787,10 @@ export default function economist(pi, injected = {}) {
       latencySource: selected.latencySource,
       expectedRetries: selected.expectedRetries,
       expectedRecoveryCostUsd: selected.expectedRecoveryCostUsd,
+      recoveryBreakdown: selected.recoveryBreakdown ?? null,
+      expectedSuccess: selected.expectedSuccessDistribution,
+      expectedCost: selected.expectedCostDistribution,
+      expectedLatency: selected.expectedLatencyDistribution,
       recoverySource: selected.recoverySource,
       expectedCacheSavingsUsd: selected.expectedCacheSavingsUsd,
       expectedCacheLossUsd: selected.expectedCacheLossUsd,
@@ -817,8 +852,26 @@ export default function economist(pi, injected = {}) {
       candidates: ordered.map(serial),
       rejected: [...ev.ranked.rejected, ...scopeRejections(ctx)],
       simulation: simulate,
+      economicsVersion: 2,
+      preset: conf.preset,
+      contextPlan: economics.plan,
+      cacheImpact: selected.cacheForecast ? { ...selected.cacheForecast.prediction, coldFallback: selected.cacheForecast.coldFallback } : null,
+      costBreakdown: selected.costBreakdown ?? null,
+      switchPlan: switchPlan ? { ...switchPlan, selected: switchPlan.selected.id } : null,
+      bandit: adaptiveBandit ? { shadowChoice: adaptiveBandit.shadowChoice, eligible: adaptiveBandit.eligible, samples: adaptiveBandit.samples, propensity: adaptiveBandit.propensity } : null,
     };
     if (!simulate) {
+      if (last?.selectedModelId !== selected.modelId) economics.lastSwitchTurn = economics.turn;
+      economics.lastPhysical = selected.model;
+      economics.route = { id: decision.id, selectedModelId: selected.modelId, pSuccess: selected.pSuccess,
+        selectedThinkingLevel: selected.effort, estimatedTotalCostUsd: selected.policyCostUsd,
+        recoveryActionCostUsd: selected.pSuccess < 1 && selected.expectedRecoveryCostUsd != null
+          ? selected.expectedRecoveryCostUsd / (1 - selected.pSuccess) : selected.baseCostUsd };
+      economics.observer.routes.push({ id: decision.id, fallback: Boolean(fallback), qualityViolation: selected.pSuccess < floor,
+        safetyViolation: selected.pSafe != null && selected.pSafe < (objectives.safetyThreshold ?? 0.9) });
+      await economics.emit('route.considered', { model: selected.modelId, count: ordered.length, routeId: decision.id, taskFamily: selected.family });
+      await economics.emit('route.selected', { model: selected.modelId, effort: selected.effort, routeId: decision.id,
+        costUsd: null, estimatedCostUsd: selected.policyCostUsd, provenance: 'estimated', propensity: 1 });
       last = decision;
       footerTui?.requestRender();
       if (sel.policyResult.startsWith('relaxed-'))
@@ -946,12 +999,33 @@ export default function economist(pi, injected = {}) {
       });
     }
   });
+  const hook = (name, fn) => {
+    try { pi.on(name, async (event, ctx) => { await init(ctx); return economics.run(ctx, guarded => fn(event, guarded)); }); }
+    catch { economics.capabilities?.unavailable(name); }
+  };
+  hook('context', (e, ctx) => economics.context(e, ctx));
+  hook('tool_result', (e, ctx) => economics.observeTool(e, ctx));
+  hook('before_provider_request', (e, ctx) => economics.beforeRequest(e, ctx));
+  hook('provider_stream_event', e => economics.stream(e));
+  hook('message_end', (e, ctx) => economics.message(e.message, ctx, last));
+  hook('turn_start', () => { economics.turn++; });
+  hook('session_switch', () => { last = null; manualModel = null; });
+  hook('session_before_compact', (e, ctx) => economics.beforeCompact(e, ctx));
+  hook('session_compact', e => economics.compacted(e));
+  hook('session_compact_failed', () => { economics.compacting = false; economics.pendingCompaction = null; });
+  hook('agent_before_settle', (e, ctx) => economics.settle(e, ctx));
+  hook('cache_warming_decision', async e => {
+    economics.capabilities.observed('cache_warming_decision');
+    // Respect host warming; never create a background paid request of our own.
+    if (await economics.active(rt.ctx) && Number.isFinite(e.warmCost) && Number.isFinite(e.missCost) && Number.isFinite(e.continuationProbability) && e.warmCost > e.missCost * e.continuationProbability) return { action: 'stop' };
+  });
+  hook('context_with_system', () => { economics.capabilities.observed('context_with_system'); });
   pi.on('message_end', async (e, ctx) => {
     if (e.message.role !== 'assistant' || pi.getCommands?.().some((c) => c.name === 'cost')) return;
     await init(ctx);
     const m = e.message,
       u = m.usage,
-      estimate = Number.isFinite(u?.cost?.total) && u.cost.total > 0 ? u.cost.total : null;
+      estimate = Number.isFinite(u?.cost?.total) && u.cost.total >= 0 ? u.cost.total : null;
     const modelId = `${m.provider}/${m.model}`;
     const num = (v) => (Number.isFinite(v) ? v : null);
     await rt.store.append('model-calls', {
@@ -963,11 +1037,14 @@ export default function economist(pi, injected = {}) {
       effort: last?.selectedModelId === modelId ? last.selectedThinkingLevel : null,
       decisionId: last?.selectedModelId === modelId ? last.id : null,
       estimatedCostUsd: estimate,
-      observedCostUsd: null,
+      observedCostUsd: Number.isFinite(u?.billedCostUsd) && u.billedCostUsd >= 0 ? u.billedCostUsd : null,
+      costProvenance: estimate === null ? 'unknown' : 'derived',
       totalTokens: u?.totalTokens ?? null,
       outputTokens: num(u?.output),
       reasoningTokens: num(u?.reasoning ?? u?.reasoningTokens),
       cacheReadTokens: num(u?.cacheRead),
+      cacheWriteTokens: num(u?.cacheWrite),
+      inputTokens: num(u?.input),
       ttftMs: num(m.ttftMs ?? u?.ttftMs),
       source: 'economist-budget-fallback',
       occurredAt: now(),
@@ -996,7 +1073,10 @@ export default function economist(pi, injected = {}) {
         : null;
     const row = pair && recordVerifiedOutcome({ taskId: scopeOf(rt.ctx).taskId, ...pair }, conf);
     if (!row) return null;
-    await rt.store.append('outcomes', row);
+    if (await rt.store.append('outcomes', row)) await economics.emit('outcome.verified', { routeId: row.decisionId, success: row.success, model: row.model });
+    await economics.noteOutcome(row);
+    economics.outcomes = prepareOutcomes(await rt.store.rows('outcomes'));
+    await economics.checkRollback(economics.outcomes);
     if (last && row.decisionId === last.id) {
       last.finalOutcome = row.success ? 'success' : 'failure';
       if (last.classifierCalled) {
@@ -1026,7 +1106,16 @@ export default function economist(pi, injected = {}) {
   pi.events.on?.('economist:outcome', (payload) => {
     recordOutcome(payload ?? {}).catch(() => {});
   });
+  const stopContextFeedback = pi.events.on?.('economist:context_feedback', payload => {
+    if (rt.ctx && economics.lifetime) economics.run(rt.ctx, ctx => economics.contextFeedback(payload, ctx.signal)).catch(() => {});
+  });
   const unsubscribe = rt.listen(async (e) => {
+    if (e.kind === 'model.call_completed' && e.source === 'economist' && e.payload.category === 'classifier') {
+      const p = e.payload;
+      await economics.operation('classifier', { id: `classifier/${p.provider}/${p.callId}`, callId: `${p.provider}/${p.callId}`,
+        usd: Number.isFinite(p.observedCost) ? p.observedCost : p.estimatedCost ?? null, provenance: Number.isFinite(p.observedCost) ? 'observed' : 'derived',
+        includedInCalls: false, budgetIncludedInCalls: true });
+    }
     if (
       e.kind === 'model.call_completed' &&
       e.source === 'economist' &&
@@ -1074,6 +1163,8 @@ export default function economist(pi, injected = {}) {
   pi.on('session_shutdown', async (_e, ctx) => {
     ctx.ui.setFooter?.(undefined);
     unsubscribe?.();
+    stopContextFeedback?.();
+    await economics.dispose();
     await rt.dispose();
   });
   pi.registerVirtualModel({
@@ -1086,21 +1177,15 @@ export default function economist(pi, injected = {}) {
     async route(request, ctx) {
       await init(ctx);
       const conf = rt.config.modelEconomist;
-      if (Number.isFinite(conf.budgetUsd)) {
-        const scope = scopeOf(ctx);
-        const calls = (await rt.store.rows('model-calls')).filter((c) =>
-          scope.taskId ? c.taskId === scope.taskId : c.sessionId === scope.sessionId,
-        );
-        if (
-          calls.some((c) => c.observedCostUsd == null && c.estimatedCostUsd == null) ||
-          calls.reduce((n, c) => n + (c.observedCostUsd ?? c.estimatedCostUsd ?? 0), 0) >=
-            conf.budgetUsd
-        )
-          throw Error('Economist task budget exhausted/unknown spend; no continuation dispatched');
-      }
+      const budget = remainingBudgets(conf, await rt.store.rows('model-calls'), economics.operations.rows, scopeOf(ctx));
+      if (budget.remainingUsd === null || budget.remainingUsd <= 0) throw Error('Economist budget exhausted/unknown spend; no continuation dispatched');
       const state = request.state ?? { phase: 'normal', retries: 0, escalations: 0 };
       const sticky = request.failed ?? request.previous;
       const messages = request.messages ?? [];
+      const humanMessage = m => m.role === 'user' && m.economistEvidence !== true;
+      const lastResponse = messages.findLastIndex(m => m.role === 'assistant');
+      if (request.reason === 'user' && !messages.slice(lastResponse + 1).some(humanMessage))
+        request = { ...request, reason: 'continuation' };
       const messageText = (message) =>
         typeof message?.content === 'string'
           ? message.content
@@ -1109,7 +1194,7 @@ export default function economist(pi, injected = {}) {
               .map((b) => b.text)
               .join('\n');
       const userTexts = messages
-        .filter((m) => m.role === 'user')
+        .filter(humanMessage)
         .map(messageText)
         .filter((t) => t.trim());
       const latest = userTexts.at(-1) ?? '';
@@ -1120,15 +1205,14 @@ export default function economist(pi, injected = {}) {
       const images = messages.some(
         (m) => Array.isArray(m.content) && m.content.some((c) => c.type === 'image'),
       );
-      const lastUser = messages.findLastIndex((m) => m.role === 'user');
+      const lastUser = messages.findLastIndex(humanMessage);
       const lastAssistant = messages.findLastIndex((m) => m.role === 'assistant');
       const imageBlocks =
         lastUser >= 0 && Array.isArray(messages[lastUser].content)
           ? messages[lastUser].content.filter((c) => c.type === 'image')
           : [];
       const latestImage = imageBlocks.length > 0 && lastUser > lastAssistant;
-      const contextTokens =
-        ctx.getContextUsage()?.tokens ?? Math.ceil(JSON.stringify(messages).length / 4);
+      const contextTokens = economics.contextTokenEstimate ?? ctx.getContextUsage()?.tokens ?? Math.ceil(JSON.stringify(messages).length / 4);
       const scan = scanMessages(messages);
       const taskKey = `${scopeOf(ctx).sessionId}/${scopeOf(ctx).taskId}`;
       const failedGate = failedTasks.has(taskKey);
@@ -1152,7 +1236,7 @@ export default function economist(pi, injected = {}) {
         failedGate,
       });
       const cps = checkpoints({ state: routingState, assessment: pre, scan, latestImage });
-      const autoMode = conf.enabled && !['off', 'manual'].includes(conf.mode);
+      const autoMode = conf.enabled && conf.routing.enabled !== false && !['off', 'manual'].includes(conf.mode);
       const need = {
         image: pre.requiresImageInput,
         tools: pre.requiresTools,
@@ -1415,6 +1499,16 @@ export default function economist(pi, injected = {}) {
       };
     },
   });
+  registerEconomicsTools(pi, economics, init, () => last, injected.Type, async (contract, ctx, signal) => {
+    const refs = await Promise.all((contract.contextRefs ?? []).map(handle => economics.artifacts.get(handle,
+      { budgetTokens: Math.min(2048, contract.budget?.tokens ?? 2048), signal })));
+    const contextTokens = Math.ceil(JSON.stringify(contract).length / 4) + refs.reduce((n, ref) => n + ref.tokens, 0);
+    const result = await decide(contract.objective, ctx, { simulate: true, interactive: false, signal, contextTokens,
+      envelope: sanitizeEnvelope({ environment: 'unknown', privacy: rt.config.modelEconomist.executor?.dataPolicy,
+        capabilities: { tools: true, fileWrite: contract.permissions?.includes('write') }, risks: [] }) });
+    return { model: result.decision.selectedModelId, thinkingLevel: result.decision.selectedThinkingLevel,
+      estimatedCostUsd: result.decision.estimatedTotalCostUsd, latencyP95Ms: result.decision.latencyP95Ms, local: result.model.local === true };
+  });
   const CADENCES = [
     { value: 'session', description: 'escolhe o melhor custo-benefício na primeira pergunta e mantém até você mudar /model' },
     { value: 'prompt', description: 'reavalia cada pergunta pelo contexto e pelo tipo de trabalho' },
@@ -1534,6 +1628,14 @@ export default function economist(pi, injected = {}) {
     name: 'economist',
     description: 'Route each request to the cheapest capable model',
     actions: {
+      preset: { hint: 'economy|balanced|quality|adaptive|custom', description: 'choose an optimization preset', args: [{ values: PRESETS }] },
+      control: { hint: 'automatic|ask|advisory', description: 'choose automation control', args: [{ values: CONTROLS }] },
+      rollout: { hint: 'observe|shadow|canary-5|canary-25|active', description: 'context optimization rollout', args: [{ values: STAGES }] },
+      metrics: { hint: '', description: 'context, cache and verified-success economics' },
+      capabilities: { hint: '', description: 'observed host capabilities' },
+      evaluate: { hint: 'FILE.jsonl', description: 'offline paired context/cache/routing ablations; no provider calls', args: [{ hint: 'file' }] },
+      migrate: { hint: '--preview|--write', description: 'preview or explicitly save compatible v2 optimizer aliases', flags: { '--preview': { hint: 'show mapping without writing' }, '--write': { hint: 'save migration' } } },
+      'off-policy': { hint: 'FILE.jsonl', description: 'offline IPS/SNIPS from logged action probabilities', args: [{ hint: 'file' }] },
       on: { hint: '', description: 'enable routing and switch to economist/auto' },
       off: { hint: '', description: 'stop routing and restore your manual model' },
       setup: {
@@ -1629,10 +1731,10 @@ export default function economist(pi, injected = {}) {
         flags: { '--tools': { values: ['on', 'off'], hint: 'tool capable' } },
       },
       budget: {
-        hint: 'task N USD',
+        hint: 'task|session|project N USD',
         description: 'per-task spend limit',
         args: [
-          { values: ['task'], hint: 'task', advance: true },
+          { values: ['task', 'session', 'project'], hint: 'scope', advance: true },
           {
             values: ['0.25', '0.50', '1.00', '5.00'].map((v) => ({
               value: v,
@@ -1740,6 +1842,27 @@ export default function economist(pi, injected = {}) {
    * Bare `/economist` opens the dashboard. Changes stay in a draft until Ctrl+S;
    * the screen language is read and saved only in the trusted current project.
    */
+  const v2Patch = (id, value, current) => {
+    if (id === 'preset') return presetPatch(value, current);
+    if (id === 'control' && CONTROLS.includes(value)) return { control: value, configVersion: 2,
+      ...(value !== 'advisory' && current.control === 'advisory' && current.preset !== 'adaptive' && current.rollout.stage === 'observe'
+        ? { rollout: { stage: 'active' } } : {}) };
+    if (id === 'rollout' && STAGES.includes(value)) return { rollout: { stage: value }, configVersion: 2 };
+    if (id === 'context-enabled' && ['on', 'off'].includes(value)) return { context: { enabled: value === 'on' } };
+    if (id === 'retrieval-budget' && [1024, 2048, 4096, 8192].includes(Number(value))) return { context: { retrieval: { budgetTokens: Number(value) } } };
+    if (id === 'algorithm' && ['expected-cost', 'cascade', 'bandit'].includes(value)) return { adaptive: { algorithm: value } };
+    if (id === 'bandit' && ['off', 'shadow', 'active'].includes(value)) return { adaptive: { bandit: value } };
+    if (['privacy', 'privacy-classifier', 'privacy-telemetry'].includes(id) && ['deny', 'redact', 'allow'].includes(value))
+      return { [id === 'privacy' ? 'executor' : id.slice('privacy-'.length)]: { dataPolicy: value } };
+    if (id === 'delegation' && ['on', 'off'].includes(value)) return { topology: { enabled: value === 'on' } };
+    throw Error(`Invalid economist ${id}: ${value}`);
+  };
+  const validateActivation = async (next) => {
+    const mutatingStage = !['observe', 'shadow'].includes(next.rollout.stage);
+    if ((next.preset === 'adaptive' && mutatingStage || next.adaptive.bandit === 'active') && !(await economics.proof())?.eligible)
+      throw Error('Adaptive activation requires paired measured evidence: P(CPVS improvement) > 0.95, sufficient samples and preserved quality/safety floors. Run /economist evaluate FILE.jsonl. Deterministic presets remain available.');
+    if (mutatingStage && economics.rollback) throw Error(`Economist rolled back: ${economics.rollback.join(', ')}. Review evidence before a new session.`);
+  };
   const openMenu = async (ctx, { conf, locked, FIELDS }) => {
     const copy = (value) => structuredClone(value);
     let saved = copy(conf);
@@ -1761,7 +1884,7 @@ export default function economist(pi, injected = {}) {
       scoped: scope.active ? scope.rows.length : physicalModels(ctx).length,
       last,
       locale,
-      notes: { modes: MODE_IDS, policies: POLICY_IDS, levels: THINKING_LEVELS },
+      notes: { modes: MODE_IDS, policies: POLICY_IDS, levels: THINKING_LEVELS, v2: true },
     }).filter((item) => {
       const lock = item.id === 'enabled' ? 'enabled' : item.id === 'pool' ? 'candidates' : FIELDS[item.id]?.lock;
       return !lock || !Object.hasOwn(locked, lock);
@@ -1780,6 +1903,26 @@ export default function economist(pi, injected = {}) {
       }
     };
     const menus = {
+      optimization: () => PRESETS.map(v => ({ value: `preset:${v}`, label: v, description: draft.preset === v ? '✓' : '' })),
+      'control-settings': () => CONTROLS.map(v => ({ value: `control:${v}`, label: v, description: draft.control === v ? '✓' : '' })),
+      'privacy-settings': () => ['privacy', 'privacy-classifier', 'privacy-telemetry'].flatMap(field => ['deny', 'redact', 'allow'].map(value =>
+        ({ value: `${field}:${value}`, label: `${field === 'privacy' ? 'Executor' : field.slice(8)}: ${value}` }))),
+      'context-settings': () => [
+        { value: 'context-enabled:on', label: 'Context optimization ON' }, { value: 'context-enabled:off', label: 'Context optimization OFF' },
+        ...[1024, 2048, 4096, 8192].map(v => ({ value: `retrieval-budget:${v}`, label: `Retrieval ${v} tokens` })),
+      ],
+      economics: () => economicsLines(economics.observer.report(economics.outcomes), economics.capabilities.capabilities, locale,
+        { stage: saved.rollout.stage, rollback: economics.rollback }),
+      advanced: () => [
+        ...dashboardItems({ conf: draft, pool: candidates(ctx), scoped: scope.rows.length, last, locale,
+          notes: { modes: MODE_IDS, policies: POLICY_IDS, levels: THINKING_LEVELS } })
+          .filter(r => r.values && r.id !== 'enabled').flatMap(r => r.values.map(v => ({ value: `${r.id}:${v}`, label: `${r.label}: ${v}` }))),
+        ...STAGES.map(v => ({ value: `rollout:${v}`, label: `Rollout: ${v}` })),
+        ...['expected-cost', 'cascade', 'bandit'].map(v => ({ value: `algorithm:${v}`, label: `Algorithm: ${v}` })),
+        ...['off', 'shadow', 'active'].map(v => ({ value: `bandit:${v}`, label: `Bandit: ${v}` })),
+        ...['deny', 'redact', 'allow'].map(v => ({ value: `privacy:${v}`, label: `Executor privacy: ${v}` })),
+        ...['on', 'off'].map(v => ({ value: `delegation:${v}`, label: `Isolated delegation: ${v}` })),
+      ],
       language: () => [
         { value: 'en', label: t('language.option.en'), description: t('language.description') },
         { value: 'pt-BR', label: t('language.option.ptBR'), description: t('language.description') },
@@ -1808,6 +1951,12 @@ export default function economist(pi, injected = {}) {
     const onChange = (id, value, update, target) => {
       const lock = id === 'enabled' ? 'enabled' : id === 'poolEdit' ? 'candidates' : FIELDS[id]?.lock;
       if (lock && Object.hasOwn(locked, lock)) throw Error(t('error.locked', { field: lock }));
+      if (['preset', 'control', 'rollout', 'context-enabled', 'retrieval-budget', 'algorithm', 'bandit', 'privacy', 'privacy-classifier', 'privacy-telemetry', 'delegation'].includes(id)) {
+        const patch = v2Patch(id, value, draft);
+        draft = merge(draft, patch);
+        updateLocalizedItems(update);
+        return `${id} → ${value}`;
+      }
       if (id === 'language') {
         if (!['en', 'pt-BR'].includes(value))
           throw Error(t('error.invalidField', { field: 'language', value, values: 'en | pt-BR' }));
@@ -1857,6 +2006,7 @@ export default function economist(pi, injected = {}) {
         throw Error(t('language.saveTrusted'));
       const before = copy(saved);
       let next = copy(draft);
+      await validateActivation(next);
       if (next.enabled && !before.enabled) {
         const available = routableModels(ctx, next);
         const selected = next.candidates.length ? new Set(next.candidates.map(specId)) : null;
@@ -1906,13 +2056,14 @@ export default function economist(pi, injected = {}) {
         ctx.ui.notify(t('notice.saveNoVirtualModel'), 'warning');
       return path;
     };
+    const report = economics.observer.report(economics.outcomes);
     const dashboardTitle = () => t('dashboard.title', {
       enabled: saved.enabled ? 'on' : 'off',
       mode: saved.mode,
       policy: saved.policy,
       pool: candidates(ctx).length,
       scope: scope.active ? scope.rows.length : 'all',
-    });
+    }) + '\n' + economicsHeader(report, locale);
     const opened = await runDashboard({
       ctx, title: dashboardTitle(), getTitle: dashboardTitle, items, onChange, menus, isDirty,
       locale,
@@ -1966,6 +2117,47 @@ export default function economist(pi, injected = {}) {
       const locked = rt.config.locked?.modelEconomist ?? {};
       const useGlobal = rest.includes('--global');
       const persist = (patch) => rt.save('modelEconomist', patch, { global: useGlobal });
+      if (action === 'migrate') {
+        if (!rest.some(v => ['--preview', '--write'].includes(v)) || rest.includes('--preview') && rest.includes('--write')) throw Error('Usage: /economist migrate --preview|--write');
+        const raw = (await yamlFile(useGlobal ? rt.globalConfigFile : rt.configFile, true)).modelEconomist ?? {};
+        const preview = migrationPreview(raw);
+        if (useGlobal) delete preview.config.locale;
+        if (rest.includes('--write')) { await validateActivation(merge(conf, preview.config));
+          const written = await persist(preview.config); return output(ctx, { ...preview, preview: false, writes: true, written }); }
+        return output(ctx, JSON.stringify(preview, null, 2));
+      }
+      if (action === 'off-policy') {
+        const path = await safePath(rt.root, rest[0] ?? '', { existing: true });
+        const signal = ctx.signal ? AbortSignal.any([ctx.signal, economics.lifetime.signal]) : economics.lifetime.signal;
+        const report = await runOperation(ctx, 'Offline IPS/SNIPS', async signal => {
+          const { rows } = await readMatrix(path, { signal }); return evaluateOffline(rows, { mode: 'off-policy', signal });
+        }, signal);
+        signal.throwIfAborted(); return output(ctx, report);
+      }
+      if (['preset', 'control', 'rollout', 'context-enabled', 'retrieval-budget', 'algorithm', 'bandit', 'privacy', 'privacy-classifier', 'privacy-telemetry', 'delegation'].includes(action)) {
+        const patch = v2Patch(action, rest[0], conf);
+        await validateActivation(merge(conf, patch));
+        const written = await persist(patch);
+        return output(ctx, `${action} → ${rest[0]} · ${written}`);
+      }
+      if (action === 'capabilities') return output(ctx, economics.capabilities.capabilities);
+      if (action === 'metrics') return output(ctx, economicsLines(economics.observer.report(prepareOutcomes(await rt.store.rows('outcomes'))),
+        economics.capabilities.capabilities, loadProjectLocale(rt.root, ctx.isProjectTrusted()).locale,
+        { stage: conf.rollout.stage, rollback: economics.rollback }).join('\n'));
+      if (action === 'evaluate') {
+        const path = await safePath(rt.root, rest[0] ?? '', { existing: true });
+        const signal = ctx.signal ? AbortSignal.any([ctx.signal, economics.lifetime.signal]) : economics.lifetime.signal;
+        const store = rt.store, policyFingerprint = economics.evidenceFingerprint();
+        const { report, datasetHash } = await runOperation(ctx, 'Offline paired evaluation', async signal => {
+          const { rows, text } = await readMatrix(path, { signal });
+          return { report: await evaluateOffline(rows, { signal, minSamples: conf.adaptive.minSamples }), datasetHash: hash(text) };
+        }, signal);
+        signal.throwIfAborted();
+        await store.append('economics-evaluations', { id: uid(), report, occurredAt: now(), datasetHash, policyFingerprint });
+        signal.throwIfAborted();
+        await economics.acceptNewEvidence(report);
+        return output(ctx, report);
+      }
       /**
        * Every writable field in one table. The text commands and the dashboard both
        * go through it, so a lock or a validation can never be bypassed by one of them.
@@ -2283,14 +2475,15 @@ export default function economist(pi, injected = {}) {
       }
       if (action === 'budget') {
         const value = Number(rest[1]);
-        if (rest[0] !== 'task' || !Number.isFinite(value) || value <= 0 || rest[2] !== 'USD')
-          throw Error('Usage: /economist budget task 0.50 USD');
-        conf.budgetUsd = value;
-        if (!scopeOf(ctx).taskId) setTask(pi, `ADHOC-${uid().slice(0, 8)}`);
+        const budgetScope = rest[0], field = { task: 'budgetUsd', session: 'sessionBudgetUsd', project: 'projectBudgetUsd' }[budgetScope];
+        if (!field || !Number.isFinite(value) || value <= 0 || rest[2] !== 'USD') throw Error('Usage: /economist budget task|session|project 0.50 USD');
+        if (Object.hasOwn(locked, field)) throw Error(`economist.${field} is locked by global policy`);
+        await persist({ [field]: value });
+        if (budgetScope === 'task' && !scopeOf(ctx).taskId) setTask(pi, `ADHOC-${uid().slice(0, 8)}`);
         await rt.store.append('budgets', {
           id: uid(),
-          scope: 'task',
-          scopeId: scopeOf(ctx).taskId,
+          scope: budgetScope,
+          scopeId: budgetScope === 'task' ? scopeOf(ctx).taskId : budgetScope === 'session' ? scopeOf(ctx).sessionId : rt.projectId,
           hardUsd: value,
           softUsd: value * 0.8,
           source: 'economist-command',
@@ -2298,7 +2491,7 @@ export default function economist(pi, injected = {}) {
         });
         return output(
           ctx,
-          `task budget ${value} USD (warn at ${Math.round(value * 0.8)}) · task ${scopeOf(ctx).taskId}`,
+          `${budgetScope} budget ${value} USD (warn at ${Math.round(value * 0.8)})`,
         );
       }
       if (action === 'simulate') {

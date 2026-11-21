@@ -4,9 +4,9 @@
  * One screen that shows every routing knob with the value it currently has, so
  * configuring the router is "look, press enter, done" instead of reading a command
  * reference. `SettingsList` cycles enum values in place and opens submenus for the
- * things that need a list (candidate pool, last decision, dry run). Each change is
- * applied and persisted the moment it is made, and the screen stays open so the
- * next one is two keystrokes away. `onChange(id, value, update, target)` returns the
+ * things that need a list (candidate pool, last decision, dry run). Changes remain
+ * in a draft until Ctrl+S; saving keeps the screen open.
+ * `onChange(id, value, update, target)` returns the
  * note shown to the user; `target` carries the pool member a submenu edit applies to.
  *
  * pi-tui and the coding-agent theme helpers are host-provided. They are imported
@@ -14,6 +14,7 @@
  */
 
 import { localeName, translate } from './lib/i18n.mjs';
+import { v2Copy, causalExplain } from './lib/v2-ui.mjs';
 
 /** `openrouter/qwen/turbo` → `qwen/turbo`: only the provider is dropped. */
 export function shortName(id) {
@@ -32,7 +33,7 @@ export function dashboardItems({ conf, pool, scoped, last, notes = {}, locale = 
   const policyKey = ['economy', 'balanced', 'quality', 'latency'].includes(conf.policy)
     ? `desc.policy.${conf.policy}`
     : 'desc.policy.fallback';
-  return [
+  const rows = [
     {
       id: 'language',
       label: t('language.row'),
@@ -127,6 +128,17 @@ export function dashboardItems({ conf, pool, scoped, last, notes = {}, locale = 
       description: t('desc.help'),
     },
   ];
+  if (!notes.v2) return rows;
+  const copy = v2Copy(locale);
+  const v2 = [
+    { id: 'optimization', label: copy.mode, currentValue: conf.preset ?? 'custom', submenu: true, description: copy.modeDescription },
+    { id: 'control-settings', label: copy.control, currentValue: conf.control ?? 'advisory', submenu: true, description: copy.controlDescription },
+    { id: 'context-settings', label: copy.context, currentValue: conf.context?.enabled === false ? 'off' : 'on', submenu: true, description: copy.contextDescription },
+    { id: 'economics', label: copy.metrics, currentValue: conf.rollout?.stage ?? 'observe', submenu: true, description: copy.metricsDescription },
+    { id: 'privacy-settings', label: copy.privacy, currentValue: conf.executor?.dataPolicy ?? 'allow', submenu: true, description: copy.advancedDescription },
+    { id: 'advanced', label: copy.advanced, currentValue: '…', submenu: true, description: copy.advancedDescription },
+  ];
+  return conf.preset === 'custom' || conf.migration?.fromVersion ? [...rows, ...v2] : [rows[0], rows[1], ...v2, ...rows.filter(r => ['pool', 'explain', 'simulate', 'help'].includes(r.id))];
 }
 
 /** Human-readable last decision, used by the explain submenu. */
@@ -187,6 +199,13 @@ export function explainLines(last, conf, { calibration = null, locale = 'pt-BR' 
       cadence: conf.cadence ?? 'prompt',
       scope: conf.scope?.source ?? 'scoped',
     }),
+    ...(last.economicsVersion === 2 ? [...causalExplain(last, locale),
+      `Context plan: ${last.contextPlan?.externalize?.length ?? 0} artifacts · topology ${last.contextPlan?.topology?.topology ?? 'single-agent'}`,
+      `Cache: ${last.cacheImpact?.reason ?? 'unknown'} · probability ${last.cacheImpact?.probability ?? 'unknown'}`,
+      `Switch: ${last.switchPlan?.reason ?? 'deterministic baseline'} · expected gain ${usd(last.switchPlan?.deltaUsd)}`,
+      `Cost decomposition: ${last.costBreakdown ? Object.entries(last.costBreakdown).map(([key, value]) => `${key}=${typeof value === 'number' ? usd(value) : value}`).join(' · ') : 'unknown'}`,
+      `Bandit: ${last.bandit?.shadowChoice ?? 'off'} · propensity ${last.bandit?.propensity ?? 1}`,
+    ] : []),
   ];
 }
 
@@ -229,6 +248,23 @@ export function candidateActions(current, locale = 'pt-BR') {
  * inject fakes here; production leaves them unset and takes the dynamic import.
  */
 export const host = { tui: undefined, agent: undefined };
+
+/** Own a cancellable operation without replacing the editor/footer or logging input data. */
+export async function runOperation(ctx, title, fn, signal) {
+  if (!host.tui?.Text || ctx.mode !== 'tui' || !ctx.ui.custom) return fn(signal);
+  const controller = new AbortController();
+  const combined = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
+  const result = await ctx.ui.custom((tui, theme, keys, done) => {
+    let disposed = false;
+    const text = new host.tui.Text(theme.fg('accent', `${title}\nEsc · cancel`));
+    Promise.resolve().then(() => fn(combined)).then(value => { if (!disposed) { disposed = true; done({ value }); } },
+      error => { if (!disposed) { disposed = true; done({ error }); } });
+    return { render: width => text.render(width), invalidate: () => text.invalidate?.(),
+      handleInput(data) { if (keys?.matches(data, 'tui.select.cancel')) controller.abort(Error('Offline evaluation cancelled')); },
+      dispose() { disposed = true; controller.abort(); } };
+  });
+  controller.abort(); if (result.error) throw result.error; return result.value;
+}
 
 /**
  * Wire the host modules the entry point (`index.ts`) imported statically. Static
@@ -629,7 +665,17 @@ export async function runDashboard(deps, injection = {}) {
     };
     for (const item of items) {
       if (item.submenu !== true) continue;
-      const panel = panels[item.id];
+      const panel = panels[item.id] ?? ((_current, close) => {
+        if (item.id === 'economics') return textScreen(item.label, menus.economics(), () => close());
+        return screen(item.label, menus[item.id](), async value => {
+          try {
+            const [field, ...parts] = value.split(':');
+            const note = await onChange(field, parts.join(':'), (id, replacement) => list.updateValue(id, replacement));
+            if (note) pendingNotes.push(note);
+            close(); refresh();
+          } catch (error) { ctx.ui.notify(error.message, 'error'); refresh(); }
+        }, () => close());
+      });
       item.submenu = (currentValue, close) => {
         submenuOpen = true;
         discardArmed = false;

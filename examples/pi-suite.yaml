@@ -3,6 +3,22 @@ suite:
   storage:
     type: files
 modelEconomist:
+  version: 2
+  configVersion: 2
+  preset: balanced
+  control: advisory # automatic | ask | advisory
+  rollout:
+    stage: observe # shadow | canary-5 | canary-25 | active; Adaptive requires paired evidence
+  context:
+    enabled: true
+    externalizeAboveTokens: 2048
+    retrieval: { enabled: true, budgetTokens: 2048, embeddings: false }
+    compaction: { enabled: true, threshold: 0.72, minFidelity: 0.95 }
+  cache: { enabled: true }
+  routing:
+    switch: { minExpectedGainPct: 12, minTurnsBetweenSwitches: 2 }
+  topology: { enabled: false } # Opt-in native Pi Agent worker; allowlisted files, bounded tools and budgets.
+  adaptive: { algorithm: expected-cost, bandit: shadow, minSamples: 30 }
   mode: hybrid
   # Quando escolher o par (modelo, esforço):
   # session  — uma escolha na sessão, até /model
@@ -46,6 +62,7 @@ modelEconomist:
     preference: false # Bradley-Terry, exige ≥ preferencePairs pares
     preferencePairs: 20
   classifier:
+    mode: hybrid # Compatible alias for modelEconomist.mode.
     enabled: true
     engine: auto
     model: typesafe/jev-latest
@@ -97,6 +114,13 @@ mcpControl:
   allowedHosts: []
   allowedExecutables: []
   managedServers: {}
+# Minimal compatible v2 shape (use instead of the expanded settings above):
+# modelEconomist:
+#   version: 2
+#   preset: balanced
+#   control: advisory
+#   optimizer: { context: auto, cache: auto, routing: auto, delegation: auto }
+#   candidates: [] # Configure approved physical provider/model IDs.
 # Global-only organization invariants (never place credentials here):
 # locked:
 #   modelEconomist:

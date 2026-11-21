@@ -152,7 +152,7 @@ test('the pi entry point imports the host modules statically and hands them to t
   const entry = await readFile(new URL('../index.ts', import.meta.url), 'utf8');
   assert.match(entry, /import \* as piTui from ['"]@earendil-works\/pi-tui['"]/);
   assert.match(entry, /import \* as piAgent from ['"]@earendil-works\/pi-coding-agent['"]/);
-  assert.match(entry, /install\(pi,\s*\{ tui: piTui, agent: piAgent, Type \}\)/);
+  assert.match(entry, /install\(pi,\s*\{ tui: piTui, agent: piAgent, Agent, Type \}\)/);
   const extension = await readFile(new URL('../extension.mjs', import.meta.url), 'utf8');
   assert.match(extension, /provideHost\(injected\.tui, injected\.agent\)/);
 });

@@ -107,157 +107,66 @@ const strip = (line) => String(line).replace(/\x1b\[[0-9;]*m/g, '');
 
 const run = async () => {
   const host = await realModules();
-  console.log(`host: ${host.entry}`);
-  // Prove the shape we rely on before anything else: which export lives where.
-  for (const name of ['Container', 'SettingsList', 'SelectList', 'Text', 'Input'])
-    console.log(`  pi-tui.${name}: ${typeof host.tui[name]}`);
-  for (const name of ['DynamicBorder', 'getSettingsListTheme', 'getSelectListTheme', 'keyHint'])
-    console.log(`  pi-coding-agent.${name}: ${typeof host.agent[name]}`);
-  if (host.provenance.length)
-    throw Error(`host module shape changed: missing ${host.provenance.join(', ')}`);
-
-  // The real pi loader: jiti plus the host module mapping, exactly as at runtime.
-  const { loadExtensions, createExtensionRuntime } = await piExtensions();
-  const entry = join(process.cwd(), 'index.ts');
-  const loaded = await loadExtensions([entry], process.cwd(), undefined, createExtensionRuntime());
-  if (loaded.errors?.length)
-    throw Error(`extension did not load: ${loaded.errors.map((e) => e.error ?? e).join('; ')}`);
-  const command = loaded.extensions
-    .flatMap((e) => [...e.commands.values()])
-    .find((c) => c.name === 'economist');
-  if (!command) throw Error('the real loader did not register /economist');
-
-  host.theme.initTheme?.();
-  const theme = host.theme.theme;
-  const keybindings = host.tui.getKeybindings();
-
-  const dir = await mkdtemp(join(tmpdir(), 'econ-smoke-'));
-  const old = process.env.PI_SUITE_HOME;
-  process.env.PI_SUITE_HOME = join(dir, 'state');
+  if (host.provenance.length) throw Error(`missing host exports: ${host.provenance.join(', ')}`);
+  const dir = await mkdtemp(join(tmpdir(), 'econ-v2-host-'));
+  const oldHome = process.env.PI_SUITE_HOME; process.env.PI_SUITE_HOME = join(dir, 'state');
   try {
+  const { loadExtensions, createExtensionRuntime } = await piExtensions();
+  const loaded = await loadExtensions([join(process.cwd(), 'index.ts')], process.cwd(), undefined, createExtensionRuntime());
+  if (loaded.errors?.length) throw Error(loaded.errors.map(e => e.error).join('; '));
+  const command = loaded.extensions.flatMap(e => [...e.commands.values()]).find(c => c.name === 'economist');
+  if (!command) throw Error('economist command not loaded');
+  const toolCount = loaded.extensions.flatMap(e => [...e.tools.values()]).length;
+  if (toolCount !== 3) throw Error(`expected 3 tools, received ${toolCount}`);
+  host.theme.initTheme?.();
+  const config = join(dir, '.pi', 'pi-suite.yaml');
     await mkdir(join(dir, '.pi'), { recursive: true });
-    // A seeded pool: `simulate` must have something to route to, and the pool submenu
-    // needs a member to open. Nothing here calls a model.
-    await writeFile(
-      join(dir, '.pi', 'pi-suite.yaml'),
-      'schemaVersion: 1\nmodelEconomist:\n  mode: rules\n  policy: economy\n  candidates:\n    - { id: openrouter/cheap/model, tier: 1, tools: true }\n    - { id: openrouter/strong/model, tier: 3, tools: true }\n',
-    );
-    const models = [
-      { provider: 'openrouter', id: 'cheap/model', name: 'cheap', api: 'openai-completions', input: ['text'], cost: { input: 0.2, output: 0.6 }, contextWindow: 200000, reasoning: true },
-      { provider: 'openrouter', id: 'strong/model', name: 'strong', api: 'openai-completions', input: ['text'], cost: { input: 3, output: 12 }, contextWindow: 200000, reasoning: true },
-    ];
-    const f = fakePi(dir, models);
-    f.ctx.scopedModels = [];
-    f.ctx.modelRegistry.hasConfiguredAuth = () => true;
-    const notes = [];
-    const firstLine = (text) => String(text).split('\n')[0];
-    f.ctx.ui.notify = (text) => notes.push(String(text));
-    f.ctx.ui.setStatus = () => {};
-    let screen = null;
-    let close;
-    const closed = new Promise((resolve) => (close = resolve));
-    f.ctx.ui.custom = (factory) => {
-      screen = factory({ requestRender: () => {} }, theme, keybindings, (result) => close(result));
-      return closed;
-    };
-    const ctx = f.ctx;
-    const show = (label, limit = 26) => {
-      console.log(`\n──── ${label}`);
-      if (!screen) {
-        console.log('   (nenhuma tela: /economist não abriu painel)');
-        return;
+    await writeFile(config, 'modelEconomist:\n  configVersion: 2\n  preset: balanced\n  control: advisory\n  mode: rules\n  candidates:\n    - { id: p/model, tier: 3, tools: true }\n');
+    const f = fakePi(dir, [{ provider: 'p', id: 'model', name: 'fixture', api: 'openai-completions', input: ['text'], cost: { input: 1, output: 2 }, contextWindow: 200000, reasoning: true }]);
+    let screen, closed = false;
+    f.ctx.ui.custom = factory => new Promise(resolve => {
+      screen = factory({ requestRender() {} }, host.theme.theme, host.tui.getKeybindings(), result => { closed = true; resolve(result); });
+    });
+    const pending = command.handler('', f.ctx);
+    const deadline = Date.now() + 4000;
+    while (!screen && Date.now() < deadline) await new Promise(r => setTimeout(r, 10));
+    if (!screen) throw Error('dashboard did not open');
+    const render = () => {
+      for (const width of [40, 80, 120]) {
+        const lines = screen.render(width);
+        if (!lines.length || lines.some(line => host.tui.visibleWidth(line) > width)) throw Error(`render exceeds ${width} columns`);
       }
-      for (const line of screen.render(96).slice(0, limit)) console.log(`   ${strip(line)}`);
     };
-    const send = (bytes) => screen.handleInput(bytes);
-    const saved = () => readFile(join(dir, '.pi', 'pi-suite.yaml'), 'utf8').catch(() => '(sem arquivo)');
-    /**
-     * The screen writes through promises the UI never awaits (a real keypress has no
-     * promise to hang on). Wait for the observable effect — the file on disk — instead
-     * of counting ticks: a deadline on a real side effect is deterministic, a tick
-     * budget is not.
-     */
-    const waitFor = async (predicate, what, ms = 4000) => {
-      const until = Date.now() + ms;
-      while (Date.now() < until) {
-        if (await predicate()) return;
-        await new Promise((r) => setTimeout(r, 20));
-      }
-      throw Error(`timeout aguardando: ${what}`);
-    };
-    const decision = async (label) => {
-      await command.handler('simulate "refatorar auth e rodar testes"', ctx);
-      console.log(`\n${label}`);
-      for (const line of String(notes.at(-1)).split('\n')) console.log('   ' + strip(line));
-    };
-
-    await decision('DECISÃO ANTES DO PAINEL (simulate, sem chamar modelo):');
-    const before = await saved();
-
-    const running = command.handler('', ctx);
-    await new Promise((r) => setImmediate(r));
-    if (!screen) {
-      await running;
-      console.log('\nPAINEL NÃO ABRIU — notas do comando (por quê?):');
-      for (const note of notes) console.log('   · ' + firstLine(note));
-      throw Error('bare /economist did not take over the screen (no menu at all)');
-    }
-    show('painel aberto com /economist (vazio)');
-
-    send(DOWN); // cadência
-    send(DOWN); // avaliação
-    send(DOWN); // política
-    show('após 3× ↓ (cursor em Política)');
-    send(ENTER);
-    await waitFor(async () => (await saved()) !== before, 'Enter em Política ter persistido');
-    show('após Enter em Política (valor ciclado, aplicado e persistido)');
-    const afterPolicy = await saved();
-    if (afterPolicy === before)
-      throw Error('Enter ciclou um valor mas nada foi persistido em .pi/pi-suite.yaml');
-    if (!/policy: (balanced|quality|latency|economy)/.test(afterPolicy))
-      throw Error('o arquivo não traz a chave policy');
-
-    // Pool → candidato → edição em uma tela aninhada.
-    for (let i = 3; i < 8; i++) send(DOWN);
-    show('cursor em "Pool de candidatos"');
-    send(ENTER);
-    show('submenu pool aberto');
-    send(ESC);
-    await new Promise((r) => setImmediate(r));
-    show('após Esc: voltou para a lista principal — o painel continua aberto');
-
-    send(ENTER); // reabre pool
-    send(ENTER); // escolhe o primeiro candidato, abre ações no mesmo submenu
-    await new Promise((r) => setImmediate(r));
-    show('ações do candidato dentro do Pool');
-    for (let i = 0; i < 4; i++) send(DOWN); // tier 1 → tier 5
-    send(ENTER);
-    await waitFor(
-      async () => /tier: 5/.test(await saved()),
-      'edição de tier pelo submenu ter persistido',
-    );
-    show('após tier 5 no candidato');
-
-    send(ESC); // ações → pool
-    send(ESC); // pool → lista principal
-    send(ESC); // fecha
-    const summary = await closed;
-    console.log('\nFECHAMENTO →', JSON.stringify(summary));
-    console.log('NOTIFICAÇÕES DO PAINEL →', JSON.stringify(notes.slice(-4).map(firstLine)));
-
-    await decision('DECISÃO DEPOIS DO PAINEL (mesmo pedido, política e tier novos):');
-    await command.handler('off', ctx);
-    await waitFor(async () => /enabled: false/.test(await saved()), 'escrita de enabled: false');
-    console.log('\nARQUIVO FINAL GRAVADO PELO PAINEL:\n' + (await saved()).trimEnd());
-    console.log('\nOK: menu abriu, navegou, persistiu e fechou com resumo contra o host real.');
+    render();
+    const before = await readFile(config, 'utf8');
+    screen.handleInput(DOWN); screen.handleInput(DOWN); screen.handleInput(ENTER); render();
+    screen.handleInput(ENTER); // Economy, first preset in the native SelectList.
+    await new Promise(r => setImmediate(r));
+    if ((await readFile(config, 'utf8')) !== before) throw Error('preset navigation wrote before Ctrl+S');
+    render();
+    await screen.handleInput('\u0013');
+    const after = await readFile(config, 'utf8');
+    if (!/preset: economy/.test(after) || closed) throw Error(`Ctrl+S did not save Economy and keep the panel open: ${f.notifications.join('; ')}`);
+    render();
+    screen.handleInput(ESC); await pending;
+    await command.handler('metrics', f.ctx);
+    if (!f.notifications.at(-1).includes('unknown')) throw Error('missing unknown provenance in metrics');
+    // Worker URL resolution must also work through Pi's real jiti extension loader.
+    await writeFile(join(dir, 'empty.jsonl'), '');
+    f.ctx.mode = 'print';
+    await command.handler('evaluate empty.jsonl', f.ctx);
+    const journal = await readdir(join(dir, 'state', 'projects'), { recursive: true });
+    const evidence = journal.find(file => /economics-evaluations\.jsonl$/.test(file));
+    if (!evidence) throw Error(`offline evaluation did not persist through real loader: ${f.notifications.at(-1)}`);
+    const saved = JSON.parse((await readFile(join(dir, 'state', 'projects', evidence), 'utf8')).trim());
+    if (saved.report.arms['full-adaptive'].eligible !== false) throw Error('empty evidence enabled Adaptive');
+    console.log(`PASS Pi ${host.entry.includes('1.5.2') ? '1.5.2' : host.entry}: real loader, ${toolCount} tools, preset Enter, Ctrl+S, Esc, 40/80/120 columns, offline evaluation thread, no provider calls.`);
   } finally {
-    if (old === undefined) delete process.env.PI_SUITE_HOME;
-    else process.env.PI_SUITE_HOME = old;
-    await rm(dir, { recursive: true, force: true });
+    if (oldHome === undefined) delete process.env.PI_SUITE_HOME; else process.env.PI_SUITE_HOME = oldHome;
+    const target = await import('node:fs/promises').then(fs => fs.realpath(dir));
+    const tempRoot = await import('node:fs/promises').then(fs => fs.realpath(tmpdir()));
+    if (!target.startsWith(tempRoot) || !target.includes('econ-v2-host-')) throw Error('invalid smoke cleanup target');
+    await rm(target, { recursive: true, force: true });
   }
 };
-
-run().catch((error) => {
-  console.error('SMOKE FALHOU:', error?.stack ?? error);
-  process.exitCode = 1;
-});
+run().catch(error => { console.error(error); process.exitCode = 1; });

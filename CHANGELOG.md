@@ -1,5 +1,22 @@
 # Changelog
 
+## 2.0.0 — 2026-11-18
+
+- Distinguish cache-hit call frequency from cached-token fraction, expose missing usage coverage, and deduplicate replayed tool-output accounting.
+- Require complete experimental pairs and all six measured arms for Adaptive acceptance; reject invalid measurement domains and partial latency/calibration coverage. Version the stricter gate so old reports need reevaluation.
+- Add hierarchical Context Planner and Economics Observer around the existing model/effort ranker; preserve quality and safety gates.
+- Add provider/host cache usage ledger, structural prefix invalidation, deterministic tool ordering, provider metadata adapters, and unified input/cache cost accounting. Unknown measurements remain unknown.
+- Externalize large tool outputs into bounded private artifacts with lexical/symbol/reference retrieval, optional local vector features, built-in economic VOI, token budgets, atomic retention and integrity checks.
+- Add incremental structured checkpoints and adaptive compaction timing, with verbatim human invariants, recoverable evidence, fidelity validation and host fallback.
+- Add cache-aware switching hysteresis, deterministic cascades, contextual bandit shadow recommendations, calibrated activation gates, six-arm paired bootstrap ablations and off-policy evaluation.
+- Ship opt-in real Pi Agent workers with separate contexts/cache identities, enforced file permissions, parse-only verifiers, cancellation, token/cost/turn budgets and lead review. Enforcing adapters remain replaceable; the existing subagent advice tool remains non-dispatching.
+- Add Economy, Balanced, Quality, Adaptive and Custom presets, progressive dashboard controls, economics metrics, capability diagnostics, rollout canaries and rollback.
+- Map legacy policies to corresponding presets (Latency to Custom), preserving independent settings and advisory/observe control without writes; add migration diff/write and compatible optimizer aliases with global locks.
+- Account for classifier, retrieval, compaction and worker costs without counting request input twice; persist task/session/project budgets and isolate late results by project.
+- Run bounded six-arm and off-policy evaluation in cancellable threads, requiring measured provenance and every applicable MVP/Beta/GA acceptance gate before adaptive activation.
+- Require Node >=22.19 and Pi 1.5.x (loader/TUI/native-worker validation targets 1.5.2).
+- Local tests do not establish production savings, successful provider integration or GA eligibility on real workloads. Adaptive and active bandits require paired measured evidence.
+
 ## 0.4.0
 
 Resumo da release (2026-11-04):

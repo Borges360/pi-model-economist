@@ -2,6 +2,7 @@ import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import * as piTui from '@earendil-works/pi-tui';
 import * as piAgent from '@earendil-works/pi-coding-agent';
 import { Type } from '@earendil-works/pi-ai';
+import { Agent } from '@earendil-works/pi-agent-core';
 import install from './extension.mjs';
 
 /**
@@ -22,5 +23,5 @@ import install from './extension.mjs';
  * tested modules still holds.
  */
 export default function (pi: ExtensionAPI) {
-  install(pi, { tui: piTui, agent: piAgent, Type });
+  install(pi, { tui: piTui, agent: piAgent, Agent, Type });
 }

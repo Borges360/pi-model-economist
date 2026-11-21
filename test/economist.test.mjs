@@ -435,10 +435,11 @@ test('calibration bins, ECE and an opt-in lookup', () => {
 /* ------------------------------ phase 4 ------------------------------ */
 
 test('precision-weighted mix: own Beta, intent pool at 0.5 and embedder neighbours at 0.25', () => {
+  const now = Date.now();
   const a = assess('adicione testes no parser');
   const action = { modelId: 'p/m', effort: 'low', version: 'version-unknown', tier: 2 };
   const own = D.familyOf(a.features);
-  const failing = (n, extra) => Array.from({ length: n }, () => outcome('p/m', 'low', false, extra));
+  const failing = (n, extra) => Array.from({ length: n }, () => outcome('p/m', 'low', false, { occurredAt: new Date(now).toISOString(), ...extra }));
   const prior = D.predictSuccess(a.features, action, {}).pSuccess;
   const withOwn = D.predictSuccess(a.features, action, { outcomes: D.prepareOutcomes(failing(8, { family: own })) });
   const withPool = D.predictSuccess(a.features, action, { outcomes: D.prepareOutcomes(failing(8, { family: 'other', intents: a.features.intents })) });
@@ -446,12 +447,14 @@ test('precision-weighted mix: own Beta, intent pool at 0.5 and embedder neighbou
   assert.equal(withPool.poolSamples, 8);
   const embed = () => [1, 0];
   const neighbours = D.predictSuccess(a.features, action, {
+    now,
     outcomes: D.prepareOutcomes(failing(8, { family: 'far', intents: ['explain'], features: { x: 1 } })),
     embed,
     learned: { embeddings: 'on', neighborCosine: 0.85 },
   });
   assert.equal(neighbours.poolSamples, 2, '8 neighbours at weight 0.25');
   const off = D.predictSuccess(a.features, action, {
+    now,
     outcomes: D.prepareOutcomes(failing(8, { family: 'far', intents: ['explain'], features: { x: 1 } })),
     embed,
     learned: { embeddings: 'off' },
