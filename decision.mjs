@@ -84,6 +84,9 @@ export function recordVerifiedOutcome(input, conf = {}, now = new Date().toISOSt
     success,
     accepted: success,
     verified: true,
+    safetyEvent: input.safetyEvent === true,
+    qualityFloorViolation: input.qualityFloorViolation === true,
+    safetyFloorViolation: input.safetyFloorViolation === true,
     latencyMs: finite(input.latencyMs) ? input.latencyMs : null,
     costUsd: finite(input.costUsd) ? input.costUsd : null,
     features: input.features ?? null,
@@ -502,6 +505,10 @@ export function rankActions(pool, a, conf, env = {}) {
         effort,
       });
       const cache = cacheTerms(m, previousModel, sessionCalls);
+      const economic = env.economics;
+      const cacheForecast = economic ? economic.ledger.forecast(m, economic.scopeKey(m), {
+        inputTokens: input, outputTokens: tokens.visibleP50, reasoningTokens: tokens.reasoningP50, useCache: economic.cacheEnabled !== false,
+      }) : null;
       const ttft = ttftDelta(m, previousModel, calls);
       const latency = latencyFor(action, m, outcomes);
       const pFail = 1 - prediction.pSuccess;
@@ -524,13 +531,16 @@ export function rankActions(pool, a, conf, env = {}) {
         samples: prediction.ownSamples,
         poolSamples: prediction.poolSamples,
         measured: prediction.ownSamples > 0,
-        baseCostUsd: price.usd,
+        baseCostUsd: cacheForecast ? cacheForecast.usd : price.usd,
+        cacheForecast,
+        recoveryCosts: economic?.recoveryCosts?.(m) ?? { refetchUsd: 0, recompactionUsd: 0, handoffUsd: 0, cacheRewarmUsd: 0 },
+        economicsOverhead: economic?.plan?.overheadUsd ?? { retrieval: 0, compaction: 0, handoff: 0 },
         classifierCostUsd: classifierCost,
         latency: { p50Ms: latency.p50Ms + ttft.ms, p95Ms: latency.p95Ms + ttft.ms },
         latencySource: latency.source,
         expectedRetries: pFail >= 1 ? conf.maxRetries : Math.min(conf.maxRetries, pFail / (1 - pFail)),
-        expectedCacheSavingsUsd: cache.savings,
-        expectedCacheLossUsd: cache.loss,
+        expectedCacheSavingsUsd: cacheForecast ? price.usd != null && cacheForecast.usd != null ? Math.max(0, price.usd - cacheForecast.usd) : null : cache.savings,
+        expectedCacheLossUsd: cacheForecast ? null : cache.loss,
         expectedTtftDeltaMs: ttft.ms,
         requiredWindow: need,
         contextPressure: finite(m.contextWindow) && m.contextWindow > 0 ? need / m.contextWindow : null,
@@ -554,19 +564,33 @@ export function rankActions(pool, a, conf, env = {}) {
       .sort((x, y) => x.baseCostUsd - y.baseCostUsd)[0];
     const next = higher && finite(higher.baseCostUsd) ? higher : other;
     act.recoverySource = next ? 'next-action' : 'self';
-    if (act.baseCostUsd === null) {
+    if (act.baseCostUsd === null || Object.values(act.economicsOverhead).some(c => !finite(c)) ||
+      Object.entries(act.recoveryCosts).some(([k, v]) => k.endsWith('Usd') && !finite(v))) {
       act.expectedRecoveryCostUsd = null;
       act.predictedCostUsd = null;
       act.policyCostUsd = null;
     } else {
-      act.expectedRecoveryCostUsd = pFail * (next ? next.baseCostUsd : act.baseCostUsd);
-      act.predictedCostUsd = act.baseCostUsd + classifierCost + act.expectedRecoveryCostUsd;
-      act.policyCostUsd = Math.max(
+      const nextRequest = next ? next.baseCostUsd : act.baseCostUsd;
+      const extras = Object.entries(act.recoveryCosts).filter(([k]) => k.endsWith('Usd')).reduce((n, [, value]) => n + value, 0);
+      const retryTail = act.cacheForecast && conf.maxRetries > 1 ? pFail * (1 - (next?.pSuccess ?? act.pSuccess)) * nextRequest : 0;
+      act.expectedRecoveryCostUsd = pFail * (nextRequest + extras) + retryTail;
+      act.recoveryBreakdown = { nextRequestUsd: nextRequest, ...act.recoveryCosts, failureProbability: pFail, retryTailUsd: retryTail };
+      act.costBreakdown = { request: act.baseCostUsd, classifier: classifierCost, recovery: act.expectedRecoveryCostUsd,
+        ...act.economicsOverhead, cacheAccounting: act.cacheForecast ? 'included-in-input' : 'legacy-estimate' };
+      act.predictedCostUsd = act.baseCostUsd + classifierCost + act.expectedRecoveryCostUsd + Object.values(act.economicsOverhead).reduce((n, c) => n + c, 0);
+      act.policyCostUsd = act.cacheForecast ? act.predictedCostUsd : Math.max(
         0,
         act.predictedCostUsd - act.expectedCacheSavingsUsd + act.expectedCacheLossUsd,
       );
     }
     act.expectedTotalCost = act.policyCostUsd;
+    act.expectedSuccessDistribution = { mean: act.pSuccess, standardDeviation: act.uncertainty, provenance: 'estimated' };
+    const costSigma = act.policyCostUsd == null ? null : (next?.baseCostUsd ?? act.baseCostUsd) * Math.sqrt(pFail * (1 - pFail));
+    act.expectedCostDistribution = { mean: act.policyCostUsd, standardDeviation: costSigma,
+      interval95: costSigma == null ? null : [Math.max(0, act.policyCostUsd - 1.96 * costSigma), act.policyCostUsd + 1.96 * costSigma],
+      provenance: act.policyCostUsd == null ? 'unknown' : 'estimated', assumptions: ['Bernoulli recovery', 'normal interval approximation'] };
+    act.expectedLatencyDistribution = { p50Ms: act.latency.p50Ms, p95Ms: act.latency.p95Ms,
+      provenance: act.latencySource === 'prior' ? 'estimated' : 'derived' };
   }
   const kept = [];
   for (const act of accepted) {

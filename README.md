@@ -2,9 +2,13 @@
 
 Routes eligible Pi requests to a physical model-and-effort pair using configured capability, risk, quality, cost and latency signals. It does not call a model to simulate or replay a benchmark.
 
-**Manifest:** `pi-model-economist` · **version:** `0.4.0` · **private:** `true`
+**Manifest:** `pi-model-economist` · **version:** `2.0.0` · **private:** `true`
 **Registry status:** not verified; this checkout does not establish an npm release.
-**Runtime:** Node.js `>=20`; Pi is the host. A real-loader/TUI smoke was observed with Pi CLI `1.4.0`; this is an observation, not a support matrix.
+**Runtime:** Node.js `>=22.19.0`; Pi `1.5.2–1.5.x`. The loader/native TUI smoke targets installed Pi `1.5.2`, with synthetic metadata and no provider calls.
+
+Version 2.0 adds context planning, recoverable tool artifacts, economic retrieval, incremental structured compaction, measured cache usage and unified cost accounting around the existing ranker. Open `/economist` and choose a preset and control level; advanced settings expose rollout, retrieval, cache-aware switching, cascades, bandit shadow and native Pi workers. Legacy policies map to the corresponding preset (Latency to Custom), retaining advisory/observe control and independent settings without writes. New sessions start at Balanced/advisory/observe. Adaptive activation requires paired measured evidence; no real-world savings are claimed from offline tests. See [the 2.0 architecture and integration guide](docs/v2.md).
+
+Commands added in 2.0: `/economist preset economy|balanced|quality|adaptive|custom`, `/economist control automatic|ask|advisory`, `/economist rollout observe|shadow|canary-5|canary-25|active`, `/economist metrics`, `/economist capabilities`, `/economist migrate --preview|--write`, `/economist evaluate FILE.jsonl` and `/economist off-policy FILE.jsonl`. `economist_retrieve` indexes permitted files and recovers artifacts. The opt-in `economist_delegate` uses a separate real Pi Agent with file permissions, token/cost/turn budgets, cancellation and lead review. Its bounded tools provide context isolation, not an OS sandbox. The original `economist_subagent_model` tool remains advice-only.
 
 ## English
 
@@ -75,7 +79,7 @@ The dashboard is localized in English and Brazilian Portuguese. English is the d
 - Use `/economist candidates list` to check the configured pool and scope.
 - Missing model capability, authentication, health, context, price or budget can make an action infeasible; follow the recovery command in the error instead of relaxing safety limits.
 - `pSuccess` uses verified outcomes and priors. `pSafe` remains unknown until the required risk samples exist. Estimated cost is not an invoice or a savings measurement.
-- The real Pi loader/TUI smoke was observed on Pi CLI `1.4.0` with synthetic model metadata; other host versions and provider integrations are not certified by that smoke.
+- The real Pi loader/TUI smoke targets Pi CLI `1.5.2` with synthetic model metadata; provider integrations and human terminal resizing are separate validation.
 
 ### License
 
@@ -148,7 +152,7 @@ O painel tem textos em inglês e português brasileiro. Inglês é o padrão e o
 - Use `/economist candidates list` para conferir pool e escopo.
 - Falta de capacidade, autenticação, saúde, janela de contexto, preço ou orçamento pode tornar uma ação inviável; siga a recuperação indicada em vez de relaxar limites de segurança.
 - `pSuccess` usa resultados verificados e priors. `pSafe` permanece desconhecido até existir a amostra de risco exigida. Custo estimado não é fatura nem medição de economia.
-- O smoke do carregador e do painel reais do Pi foi observado no Pi CLI `1.4.0`, com metadados sintéticos; outras versões do host e integrações com provedores não são certificadas por esse smoke.
+- O smoke do carregador e do painel reais usa Pi CLI `1.5.2`, com metadados sintéticos; provedores reais e redimensionamento físico exigem validação própria.
 
 ### Licença
 

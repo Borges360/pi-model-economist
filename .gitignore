@@ -4,6 +4,7 @@ node_modules/
 *.log
 coverage/
 reports/
+.context/
 .pi/state/
 
 # harness:versioned-instructions:start
