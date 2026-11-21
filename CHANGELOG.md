@@ -14,7 +14,7 @@
 - Map legacy policies to corresponding presets (Latency to Custom), preserving independent settings and advisory/observe control without writes; add migration diff/write and compatible optimizer aliases with global locks.
 - Account for classifier, retrieval, compaction and worker costs without counting request input twice; persist task/session/project budgets and isolate late results by project.
 - Run bounded six-arm and off-policy evaluation in cancellable threads, requiring measured provenance and every applicable MVP/Beta/GA acceptance gate before adaptive activation.
-- Require Node >=22.19 and Pi 1.5.x (loader/TUI/native-worker validation targets 1.5.2).
+- Require Node >=22.19 and Pi 1.5.x or 1.6.x (loader/TUI/native-worker validation on 1.5.2 and 1.6.0).
 - Local tests do not establish production savings, successful provider integration or GA eligibility on real workloads. Adaptive and active bandits require paired measured evidence.
 
 ## 0.4.0
