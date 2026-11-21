@@ -589,7 +589,8 @@ async function fixture(t, extra = '', injected = {}, models = pool) {
   t.after(async () => {
     if (previous == null) delete process.env.PI_SUITE_HOME;
     else process.env.PI_SUITE_HOME = previous;
-    await rm(dir, { recursive: true, force: true });
+    // Windows: gravações assíncronas ainda abertas fazem o rmdir falhar com ENOTEMPTY/EBUSY.
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   });
   await mkdir(join(dir, '.pi'));
   await writeFile(join(dir, '.pi', 'pi-suite.yaml'), yaml(extra));
@@ -764,7 +765,12 @@ test('verified outcomes reach the decision; a model claim does not', async (t) =
   const outs = await rowsOf(dir, 'outcomes');
   assert.equal(outs.length, 1);
   assert.equal(outs[0].source, 'test');
-  await f.command('economist', 'explain');
+  // O resultado verificado chega à decisão de forma assíncrona; em runners lentos 20 ms não bastam.
+  for (let i = 0; i < 100; i++) {
+    await f.command('economist', 'explain');
+    if (/resultado final: success/.test(f.notifications.at(-1))) break;
+    await new Promise((r) => setTimeout(r, 20));
+  }
   assert.match(f.notifications.at(-1), /resultado final: success/);
   assert.match(f.notifications.at(-1), /pSuccess:[\s\S]*p95[\s\S]*custo previsto[\s\S]*cache[\s\S]*calibração/);
 });
