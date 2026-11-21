@@ -441,8 +441,8 @@ test('precision-weighted mix: own Beta, intent pool at 0.5 and embedder neighbou
   const own = D.familyOf(a.features);
   const failing = (n, extra) => Array.from({ length: n }, () => outcome('p/m', 'low', false, { occurredAt: new Date(now).toISOString(), ...extra }));
   const prior = D.predictSuccess(a.features, action, {}).pSuccess;
-  const withOwn = D.predictSuccess(a.features, action, { outcomes: D.prepareOutcomes(failing(8, { family: own })) });
-  const withPool = D.predictSuccess(a.features, action, { outcomes: D.prepareOutcomes(failing(8, { family: 'other', intents: a.features.intents })) });
+  const withOwn = D.predictSuccess(a.features, action, { now, outcomes: D.prepareOutcomes(failing(8, { family: own })) });
+  const withPool = D.predictSuccess(a.features, action, { now, outcomes: D.prepareOutcomes(failing(8, { family: 'other', intents: a.features.intents })) });
   assert.ok(withOwn.pSuccess < withPool.pSuccess && withPool.pSuccess < prior, 'own data weighs more than pooled');
   assert.equal(withPool.poolSamples, 8);
   const embed = () => [1, 0];
