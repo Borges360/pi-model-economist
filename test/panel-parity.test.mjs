@@ -77,12 +77,14 @@ test('every value the dashboard offers is accepted by the same table that writes
   assert.ok(rows.length >= 8, `esperava pelo menos 8 linhas enum, achei ${rows.length}`);
   for (const row of rows) {
     for (const value of row.values) await settings.cycle(row.id, value);
+    await f.screen.handleInput('\u0013');
     const written = await saved(dir);
     assert.equal(
       readBack(row.id, written),
       row.values.at(-1),
-      `${row.id}: o painel ofereceu ${JSON.stringify(row.values)} e o último valor não chegou ao arquivo`,
+      `${row.id}: o painel ofereceu ${JSON.stringify(row.values)} e o último valor não chegou ao arquivo após Ctrl+S`,
     );
+    assert.ok(!f.customResult, `${row.id}: salvar mantém o painel aberto`);
   }
   assert.deepEqual(rows.find((r) => r.id === 'cadence').values, ['session', 'prompt', 'subagent']);
   assert.equal(rows.find((r) => r.id === 'selected-as'), undefined);
@@ -150,7 +152,7 @@ test('the pi entry point imports the host modules statically and hands them to t
   const entry = await readFile(new URL('../index.ts', import.meta.url), 'utf8');
   assert.match(entry, /import \* as piTui from ['"]@earendil-works\/pi-tui['"]/);
   assert.match(entry, /import \* as piAgent from ['"]@earendil-works\/pi-coding-agent['"]/);
-  assert.match(entry, /install\(pi,\s*\{ tui: piTui, agent: piAgent, Type \}\)/);
+  assert.match(entry, /install\(pi,\s*\{ tui: piTui, agent: piAgent, Agent, Type \}\)/);
   const extension = await readFile(new URL('../extension.mjs', import.meta.url), 'utf8');
   assert.match(extension, /provideHost\(injected\.tui, injected\.agent\)/);
 });

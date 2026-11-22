@@ -3,7 +3,7 @@ import { strict as assert } from 'node:assert';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createRuntime } from '../lib/core.mjs';
+import { createRuntime, validateConfig } from '../lib/core.mjs';
 import { fakePi } from '../test-support/fakes.mjs';
 import { defaults } from '../routing.mjs';
 test('global locked policy cannot be loosened by trusted project; no database backend accepted', async () => {
@@ -36,4 +36,30 @@ test('global locked policy cannot be loosened by trusted project; no database ba
     else process.env.PI_SUITE_HOME = old;
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test('role preferences accept only known roles, model ids, and explicit fallback flags', () => {
+  assert.doesNotThrow(() =>
+    validateConfig({
+      modelEconomist: {
+        rolePreferences: {
+          planner: { model: 'openrouter/planner', effort: 'high', allowFallback: false },
+          executor: { model: null, effort: 'medium', allowFallback: true },
+          reviewer: { model: 'openrouter/reviewer' },
+        },
+      },
+    }),
+  );
+  assert.throws(
+    () => validateConfig({ modelEconomist: { rolePreferences: { admin: { model: 'p/m' } } } }),
+    /role preference name/,
+  );
+  assert.throws(
+    () => validateConfig({ modelEconomist: { rolePreferences: { planner: { model: 'p/m', allowFallback: 'yes' } } } }),
+    /role preference for planner/,
+  );
+  assert.throws(
+    () => validateConfig({ modelEconomist: { rolePreferences: { planner: { effort: 'turbo' } } } }),
+    /role preference for planner/,
+  );
 });

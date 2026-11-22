@@ -32,6 +32,14 @@ export async function piExtensions() {
   );
 }
 
+export async function piCore() {
+  for (const entry of [process.env.PI_CODING_AGENT_ENTRY, ...(await releaseEntries())].filter(Boolean)) {
+    const dir = String(entry).replace(/[\\/]index\.js$/, '');
+    try { return await import(pathToFileURL(join(dir, '..', '..', 'pi-agent-core', 'dist', 'index.js')).href); } catch { /* next installed release */ }
+  }
+  throw Error('Installed Pi agent-core not found');
+}
+
 async function releaseEntries() {
   const root = join(homedir(), '.pi', 'agent', 'install', 'releases');
   let versions = [];

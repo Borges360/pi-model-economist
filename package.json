@@ -1,18 +1,41 @@
 {
   "name": "pi-model-economist",
-  "version": "0.4.0",
+  "description": "Pi context and cost optimizer with measured cache economics, structured compaction and adaptive model/effort routing.",
+  "files": [
+    "index.ts",
+    "extension.mjs",
+    "decision.mjs",
+    "routing.mjs",
+    "menu.mjs",
+    "benchmark.mjs",
+    "context/",
+    "economics/",
+    "topology/",
+    "routing/",
+    "learning/",
+    "observability/",
+    "lib/",
+    "docs/fluxo-de-decisao.md",
+    "docs/v2.md",
+    "docs/assets/inteiro-mark.svg",
+    "docs/assets/INTEIRO-MARK-LICENSE.txt",
+    "examples/pi-suite.yaml",
+    "CHANGELOG.md"
+  ],
+  "version": "2.0.0",
   "private": true,
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": ">=22.19.0"
   },
   "keywords": [
     "pi-package"
   ],
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*",
-    "@earendil-works/pi-ai": "*",
-    "@earendil-works/pi-tui": "*"
+    "@earendil-works/pi-coding-agent": ">=1.5.2 <1.7.0",
+    "@earendil-works/pi-ai": ">=1.5.2 <1.7.0",
+    "@earendil-works/pi-tui": ">=1.5.2 <1.7.0",
+    "@earendil-works/pi-agent-core": ">=1.5.2 <1.7.0"
   },
   "dependencies": {
     "yaml": "2.8.2"
@@ -23,6 +46,7 @@
     ]
   },
   "scripts": {
-    "test": "node --test"
+    "test": "node --test",
+    "test:host": "node scripts/check-load.mjs . && node scripts/smoke-dashboard.mjs && node scripts/smoke-worker.mjs"
   }
 }
