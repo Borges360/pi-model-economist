@@ -1,4 +1,5 @@
 import { uid, redact, scrubEntropy, canonical, timed, Circuit } from './lib/core.mjs';
+import { v2Defaults } from './lib/v2-config.mjs';
 export const difficulties = ['trivial', 'simple', 'moderate', 'complex', 'critical'];
 /** Multi-label intents. `kind` is only the legacy single label kept for old logs. */
 export const kinds = [
@@ -340,6 +341,7 @@ export function modelRoleOf(assessment) {
 }
 export const defaults = {
   modelEconomist: {
+    ...v2Defaults,
     enabled: true,
     mode: 'hybrid',
     cadence: 'prompt', // session | prompt | subagent

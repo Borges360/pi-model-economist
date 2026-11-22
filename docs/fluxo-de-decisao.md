@@ -1,5 +1,9 @@
 # Fluxo de decisão
 
+## Camadas da versão 2.0
+
+`context/runtime.mjs` conecta o Context Planner e o Economics Observer ao lifecycle do Pi 1.5.2. Contexto → artefatos/retrieval/checkpoint → topologia → `assess()` → `rankActions()` → política/hysteresis → Pi → usage/resultados verificados. A unidade pública `(model, effort)` e seus floors continuam. Quando a camada v2 está ativa, cache é parte do custo de input, sem subtrair a mesma economia duas vezes; em observe/advisory, a política legada continua como baseline. Proveniência, capacidades, presets, contratos de worker, avaliação pareada e gates estão em [v2.md](v2.md). As seções abaixo documentam o baseline preservado e as invariantes comuns.
+
 A extensão não responde à tarefa. Ela escolhe a **ação** `(modelo físico, nível de esforço)` que o Pi vai usar naquele turno. O fluxo vive em `economist/auto` → `route()` (`extension.mjs`) → `decide()`. As regras e o classificador estão em `routing.mjs` (`assess`, `Classifiers`). O ranking, as políticas e o aprendizado estão em `decision.mjs` (`rankActions`, `predictSuccess`, `selectAction`). O benchmark offline está em `benchmark.mjs` (`benchmarkMatrix`).
 
 Quatro eixos independentes. Nenhum deles é os outros.

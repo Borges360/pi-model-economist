@@ -6,6 +6,14 @@
 - Never invent missing prices, measurements, quality, availability or savings.
   The product does not guarantee model competence, provider availability or
   measured cost reduction.
+- Version 2.0 adds context planning, private recoverable artifacts, cache usage
+  observation and structured compaction around that ranker. Read `docs/v2.md`
+  for provenance, capability checks, preset migration and activation gates.
+- `economist_delegate` is a separate opt-in execution tool with a native Pi Agent
+  worker and bounded contract. Its tools enforce file permissions and budgets;
+  it is context isolation, not an OS sandbox. Never describe the original
+  `economist_subagent_model` advice tool as a dispatcher. No provider,
+  clone/worktree or filesystem sandbox is installed by the extension.
 - Keep configuration scoped to `modelEconomist`. Candidate setup asks before
   writing; project locale is saved only in a trusted project's Pi Suite config.
   Do not inspect live provider credentials or persistent Pi configuration.

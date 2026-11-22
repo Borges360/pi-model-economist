@@ -39,6 +39,25 @@ product's local behavior and safety boundaries.
 
 ## Interface and verification
 
+- Version 2.0 context/cache economics lives in `context/`, `economics/`,
+  `routing/adaptive.mjs`, `learning/calibration.mjs`, `topology/` and
+  `observability/`; read `docs/v2.md` for the integration contract.
+- Preserve observed/derived/estimated/unknown provenance. Host price calculations
+  are not invoices; absent cache retention or usage is never a universal TTL,
+  hit probability or zero. Cache is counted inside input cost exactly once.
+- Keep artifacts in private project-scoped operational storage, separate from
+  metadata-only audit events. Recovery handles cannot escape the store.
+- `economist_delegate` is separate from the advice tool. Its native Pi Agent
+  worker requires explicit enabling, bounded budgets/permissions and lead review.
+  Native verifiers check JSON, literal content or JavaScript syntax, without
+  arbitrary shell execution. An enforcing adapter may replace the native worker.
+  Never infer OS isolation or verified success from a worker's self-report.
+- Adaptive/bandit activation needs paired measured evidence and family samples.
+  Tests and synthetic ablations do not prove real workload savings. Rollback
+  persists across session changes until new eligible evidence is evaluated.
+- Run `npm test`, `npm run test:host` (installed Pi with synthetic metadata) and
+  `npm pack --dry-run` for release changes. Do not publish implicitly.
+
 - `/economist` opens the dashboard. Keep command names and native Pi completion
   aligned with configured values; drafts and saves must retain the documented
   Ctrl+S/Escape behavior.
