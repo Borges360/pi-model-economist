@@ -18,8 +18,6 @@
     "vendor/",
     "docs/fluxo-de-decisao.md",
     "docs/v2.md",
-    "docs/assets/inteiro-mark.svg",
-    "docs/assets/INTEIRO-MARK-LICENSE.txt",
     "examples/pi-suite.yaml",
     "CHANGELOG.md"
   ],

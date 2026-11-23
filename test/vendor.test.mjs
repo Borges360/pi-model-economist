@@ -70,3 +70,11 @@ test('consumer README does not advertise the design system or its mark', async (
   const readme = await readFile(new URL('README.md', root), 'utf8');
   assert.doesNotMatch(readme, /inteiro/i);
 });
+
+test('the package ships no design-system mark: only the vendored adapter carries that name', async () => {
+  const pkg = JSON.parse(await readFile(new URL('package.json', root), 'utf8'));
+  const named = pkg.files.filter((entry) => /inteiro/i.test(entry) && !entry.startsWith('vendor/'));
+  assert.deepEqual(named, [], 'no "files" entry outside vendor/ names the design system');
+  const assets = await readdir(new URL('docs/assets/', root)).catch(() => []);
+  assert.deepEqual(assets.filter((name) => /inteiro/i.test(name)), [], 'no mark asset left in docs/assets');
+});
