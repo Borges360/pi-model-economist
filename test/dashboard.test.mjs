@@ -401,6 +401,36 @@ test('a cancelled in-flight simulation aborts and ignores its late result', asyn
   assert.equal(result.action, undefined);
 });
 
+test('the simulation request is not a draft: no unsaved marker, Ctrl+S says why, one Esc closes', async () => {
+  const ctx = { ui: {} };
+  const screens = attachScreens(ctx);
+  let ran = 0;
+  const { session, ...screen } = simulationScreen('en', { run: async () => { ran++; return ['never']; } });
+  const opening = openPiSettings(ctx.ui, { session, ...screen, signal: new AbortController().signal, locale: 'en' });
+  const mounted = await waitForScreen(screens);
+  const panel = mounted.component;
+  assert.match(view(panel, 120), /Run simulation\s+\[unavailable: Enter a request to simulate\.\]/);
+  await focus(panel, 'request');
+  await press(panel, KEY.enter);
+  await type(panel, 'refactor auth');
+  await press(panel, KEY.enter);
+  assert.equal(panel.controller.session.draft.request, 'refactor auth');
+  const typed = view(panel, 80);
+  assert.match(typed, /^Economist · simulate a request$/m, 'no draft marker on the title');
+  assert.doesNotMatch(typed, /Unsaved changes/);
+  assert.doesNotMatch(view(panel, 120), /Run simulation\s+\[unavailable/, 'the request enables Run');
+
+  await press(panel, KEY.ctrlS);
+  assert.match(view(panel, 120), /This screen has nothing to save; choose Run simulation\./, 'Ctrl+S is not silent');
+  assert.equal(mounted.closed, false);
+  assert.equal(ran, 0, 'Ctrl+S never runs the simulation');
+
+  await press(panel, KEY.esc);
+  assert.equal(mounted.closed, true, 'a single Esc leaves: there is nothing to discard');
+  const result = await opening;
+  assert.equal(result.action, undefined);
+});
+
 test('the panel renders without models or providers and keeps Unicode within 40/80/120 columns', async (t) => {
   const { f, screens } = await open(t, '', []);
   const running = f.command('economist', '');

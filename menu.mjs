@@ -387,6 +387,11 @@ export function restoreDraft(session, draft) {
  * receives the request text and an AbortSignal and returns the explanation lines; the
  * screen closes with them as `actionValue`. A result that arrives after Esc is dropped by
  * the adapter (the action reports that it finished too late and the screen stays open).
+ *
+ * The request is input for an operation, not a setting: nothing here is ever stored. So
+ * the typed request is never an unsaved draft (no "*" marker, no "unsaved changes", Esc
+ * closes at once), and Ctrl+S or the bar's Save say that there is nothing to save instead
+ * of doing nothing.
  */
 export function simulationScreen(locale, { run }) {
   const t = (key, vars) => translate(locale, key, vars);
@@ -396,18 +401,24 @@ export function simulationScreen(locale, { run }) {
     kind: 'text',
     label: t('simulate.request'),
     description: t('desc.simulate.request'),
-    validate: missing,
   }], { request: '' }, { locale });
   return {
     session,
     title: t('simulate.title'),
     scope: t('panel.simulateDisclaimer'),
-    // Nothing on this screen is persisted: Ctrl+S is left to the host, and the bar's
-    // Save explains where to go instead of pretending to write something.
-    ctrlS: false,
+    // Ctrl+S and the bar's Save explain where to go instead of pretending to write something.
+    ctrlS: true,
     formatError: (error) => String(error?.message ?? error ?? '').trim() || undefined,
     persist: async () => {
       throw Error(t('simulate.nothingToSave'));
+    },
+    // The adapter compares the draft with what is stored. Nothing is stored here, so the
+    // confirmed request becomes the "stored" value at once (the adapter's own storage read
+    // hook; an empty request is still refused by the disabled Run action, not by the field).
+    onDraftChange: (draft, _info, panel) => {
+      if (JSON.stringify(draft) === JSON.stringify(panel.session.persisted)) return;
+      panel.session.reconcilePersistence(draft);
+      panel.session.setStatus('');
     },
     actions: [{
       id: 'run',
