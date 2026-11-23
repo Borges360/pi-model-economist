@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createRuntime, validateConfig } from '../lib/core.mjs';
@@ -62,4 +62,31 @@ test('role preferences accept only known roles, model ids, and explicit fallback
     () => validateConfig({ modelEconomist: { rolePreferences: { planner: { effort: 'turbo' } } } }),
     /role preference for planner/,
   );
+});
+
+test('a save whose signal is already aborted writes nothing, even while queued behind another save', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'suite-save-abort-'));
+  const old = process.env.PI_SUITE_HOME;
+  process.env.PI_SUITE_HOME = join(dir, 'state');
+  try {
+    await mkdir(join(dir, '.pi'));
+    await writeFile(join(dir, '.pi', 'pi-suite.yaml'), 'modelEconomist:\n  mode: rules\n');
+    const f = fakePi(dir);
+    const rt = createRuntime(f.pi, 'test', defaults);
+    await rt.init(f.ctx);
+    const controller = new AbortController();
+    const first = rt.save('modelEconomist', { policy: 'economy' });
+    const queued = rt.save('modelEconomist', { mode: 'hybrid' }, { signal: controller.signal });
+    controller.abort();
+    await first;
+    await assert.rejects(queued, { name: 'AbortError' });
+    const text = await readFile(join(dir, '.pi', 'pi-suite.yaml'), 'utf8');
+    assert.match(text, /policy: economy/, 'the earlier save landed');
+    assert.match(text, /mode: rules/, 'the aborted save did not');
+    await rt.dispose();
+  } finally {
+    if (old === undefined) delete process.env.PI_SUITE_HOME;
+    else process.env.PI_SUITE_HOME = old;
+    await rm(dir, { recursive: true, force: true });
+  }
 });

@@ -2074,9 +2074,12 @@ export default function economist(pi, injected = {}) {
       let path;
       try {
         if (modelToSet) await pi.setModel(modelToSet);
+        // An Esc that landed while the model switch was pending cancels the save before
+        // anything is written; the catch below puts the previous model back.
+        operationSignal.throwIfAborted();
         if (newLocale) next.locale = newLocale;
         else delete next.locale;
-        path = await rt.save('modelEconomist', next);
+        path = await rt.save('modelEconomist', next, { signal: operationSignal });
       } catch (error) {
         manualModel = manualBefore;
         if (modelToSet && currentModel) {

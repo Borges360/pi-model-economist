@@ -491,40 +491,73 @@ test('a draft survives a trip to the read-only views', async (t) => {
   await running;
 });
 
-test('Esc during a save cancels it; a write that lands late is reconciled from storage', async (t) => {
-  const { dir, f, screens } = await open(
+/** Routing off with one candidate, and a `setModel` that waits until the test releases it. */
+const pendingModelSwitch = async (t) => {
+  const opened = await open(
     t,
     'modelEconomist:\n  enabled: false\n  candidates:\n    - id: openrouter/cheap/model\n      tier: 1\n      tools: true\n',
   );
-  const setModel = f.pi.setModel;
-  let release;
-  f.pi.setModel = (model) => new Promise((resolve) => {
-    release = () => resolve(setModel(model));
-  });
-  const running = f.command('economist', '');
-  const panel = (await waitForScreen(screens)).component;
+  const setModel = opened.f.pi.setModel;
+  const pending = { calls: [], release: undefined };
+  opened.f.pi.setModel = (model) => {
+    pending.calls.push(`${model.provider}/${model.id}`);
+    // Only the first switch (to economist/auto) waits; the rollback goes straight through.
+    if (pending.calls.length > 1) return setModel(model);
+    return new Promise((resolve) => {
+      pending.release = () => resolve(setModel(model));
+    });
+  };
+  const running = opened.f.command('economist', '');
+  const panel = (await waitForScreen(opened.screens)).component;
   await focus(panel, 'enabled');
   await press(panel, KEY.enter);
   assert.equal(panel.controller.session.draft.enabled, true);
-
   panel.handleInput(KEY.ctrlS);
-  for (let i = 0; i < 100 && !release; i++) await new Promise((r) => setTimeout(r, 5));
+  for (let i = 0; i < 100 && !pending.release; i++) await new Promise((r) => setTimeout(r, 5));
   assert.ok(panel.controller.session.saving, 'the save is in flight');
   assert.match(view(panel, 120), /Esc cancel save/);
+  return { ...opened, panel, running, pending, modelBefore: opened.f.ctx.model };
+};
+
+test('Esc while the model switch is pending cancels the save: nothing is written and the model is restored', async (t) => {
+  const { dir, f, panel, running, pending, modelBefore } = await pendingModelSwitch(t);
+  panel.handleInput(KEY.esc);
+  pending.release();
+  await panel.drain();
+  for (let i = 0; i < 100 && pending.calls.length < 2; i++) await new Promise((r) => setTimeout(r, 5));
+  assert.match(view(panel, 120), /Save cancelled/);
+  assert.equal((await saved(dir)).modelEconomist.enabled, false, 'the cancelled save wrote nothing');
+  assert.deepEqual(pending.calls, ['economist/auto', 'openrouter/cheap/model'], 'the switch was rolled back');
+  assert.equal(f.ctx.model, modelBefore);
+  assert.match(view(panel, 80), /^Economist \*$/m, 'the draft is kept');
+  await press(panel, KEY.esc, KEY.esc);
+  await running;
+  assert.equal((await saved(dir)).modelEconomist.enabled, false);
+  assert.match(f.notifications.at(-1), /no changes/i);
+});
+
+test('a model switch that finishes after Esc was given up on writes nothing; storage is then checked', async (t) => {
+  const { dir, f, panel, running, pending, modelBefore } = await pendingModelSwitch(t);
   panel.handleInput(KEY.esc);
   await panel.drain();
   assert.match(view(panel, 120), /Save was not confirmed/);
   assert.equal((await saved(dir)).modelEconomist.enabled, false, 'nothing was written yet');
 
-  release();
-  for (let i = 0; i < 100 && (await saved(dir)).modelEconomist.enabled !== true; i++)
-    await new Promise((r) => setTimeout(r, 5));
-  assert.equal((await saved(dir)).modelEconomist.enabled, true, 'the late write reached the disk');
+  pending.release();
+  for (let i = 0; i < 100 && pending.calls.length < 2; i++) await new Promise((r) => setTimeout(r, 5));
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal((await saved(dir)).modelEconomist.enabled, false, 'the late completion does not write the cancelled save');
+  assert.equal(f.ctx.model, modelBefore, 'and the late model switch is rolled back');
+
   await press(panel, KEY.ctrlS);
   assert.match(view(panel, 120), /Storage checked/);
-  assert.equal(panel.controller.session.dirty, false, 'the stored state now matches the draft');
+  assert.equal(panel.controller.session.dirty, true, 'storage still has routing off, so the draft stays pending');
+  await press(panel, KEY.esc);
+  assert.match(view(panel, 80), /Press Esc again to discard/);
   await press(panel, KEY.esc);
   await running;
+  assert.equal((await saved(dir)).modelEconomist.enabled, false, 'discarding leaves the file as it was');
+  assert.match(f.notifications.at(-1), /no changes/i);
 });
 
 test('a session switch closes the panel, drops the draft and reports nothing into the next session', async (t) => {
