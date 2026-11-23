@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { parseDocument } from 'yaml';
 import install from '../extension.mjs';
-import { runDashboard } from '../menu.mjs';
+import { economistFields } from '../menu.mjs';
 import { fakePi } from '../test-support/fakes.mjs';
 
 const chat = (id, price, extra = {}) => ({
@@ -76,35 +76,33 @@ test('a global lock freezes effort and scope for the commands and the menu alike
     globalExtra: 'locked:\n  modelEconomist:\n    thinking:\n      ceiling: high\n',
   });
   await assert.rejects(() => f.command('economist', 'ceiling low'), /locked by global policy/);
-  // The dashboard routes through the same field table, so it cannot bypass the lock.
-  const { dashboardItems } = await import('../menu.mjs');
-  const items = dashboardItems({
-    conf: (await import('../routing.mjs')).defaults.modelEconomist,
-    pool: [],
-    scoped: 0,
-    last: null,
-    notes: { levels: ['off', 'low', 'medium', 'high'] },
-  });
-  assert.ok(items.some((i) => i.id === 'ceiling'), 'the row exists by default');
+  // The panel routes through the same field table, so it cannot bypass the lock: the row
+  // exists by default and carries the lock source when a lock applies
+  // (keyboard coverage in panel-parity.test.mjs).
+  const enums = { presets: [], controls: [], cadences: [], modes: [], policies: [], thinking: [], levels: ['off', 'low', 'medium', 'high'], scopes: [], stages: [] };
+  const free = economistFields('en', { enums });
+  assert.ok(free.some((field) => field.id === 'ceiling' && !field.locked), 'the row exists by default');
+  const locked = economistFields('en', { enums, locks: { ceiling: 'global policy' } });
+  assert.deepEqual(locked.find((field) => field.id === 'ceiling').locked, { source: 'global policy' });
   await f.command('economist', '');
   assert.match(f.notifications.at(-1), /Economist ·/);
   assert.equal(dir.length > 0, true);
 });
 
-test('the dashboard degrades instead of throwing where the host has no TUI', async () => {
-  const opened = await runDashboard({
-    ctx: { mode: 'print', hasUI: false, ui: {}, notify: () => {} },
-    title: 'x',
-    items: [],
-    onChange: () => {},
-    menus: {},
-  });
-  assert.equal(opened, false, 'no custom screen, no dashboard');
-  const tui = await import('@earendil-works/pi-tui').then(
-    () => true,
-    () => false,
-  );
-  assert.equal(tui, false, 'and this package never bundles the host TUI into node --test');
+test('the panel degrades to the text status instead of throwing where the host has no TUI', async (t) => {
+  const { f } = await fresh(t);
+  let mounted = 0;
+  f.ctx.mode = 'print';
+  f.ctx.ui.custom = () => {
+    mounted++;
+    return Promise.resolve();
+  };
+  await f.command('economist', '');
+  assert.equal(mounted, 0, 'no custom screen outside the TUI');
+  assert.match(f.notifications.at(-1), /Economist ·/);
+  // The vendored adapter imports pi-tui statically, so `node --test` resolves the pinned
+  // devDependency (the same 1.6.0 the smoke loads); production resolves Pi's own copy
+  // through the extension loader. The text fallback above needs neither.
 });
 
 test('a bare /economist reports state and effort, and never dumps the whole grammar', async (t) => {
@@ -114,9 +112,10 @@ test('a bare /economist reports state and effort, and never dumps the whole gram
   });
   await f.command('economist', '');
   const panel = f.notifications.at(-1);
-  assert.match(panel, /Economist · ON · cadência prompt · avaliação rules · política economy/);
-  assert.match(panel, /esforço follow/);
-  assert.match(panel, /pool 2 modelo\(s\)/);
-  assert.match(panel, /última decisão: nenhuma/);
+  // English is the default language of the text status too (it used to be fixed in Portuguese).
+  assert.match(panel, /Economist · ON · cadence prompt · assessment rules · policy economy/);
+  assert.match(panel, /effort follow/);
+  assert.match(panel, /pool 2 model\(s\)/);
+  assert.match(panel, /last decision: none/);
   assert.doesNotMatch(panel, /classifier-model PROVIDER\/MODEL/, 'not a command dump');
 });

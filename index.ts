@@ -6,8 +6,10 @@ import { Agent } from '@earendil-works/pi-agent-core';
 import install from './extension.mjs';
 
 /**
- * The dashboard draws with host terminal components, so the host modules have to be
- * imported **statically, here at the entry point**, and handed to the extension.
+ * The settings panel (vendored adapter in `vendor/inteiro-terminal/`) and the offline
+ * evaluation overlay draw with host terminal modules, so those modules have to be
+ * imported **statically** — here at the entry point, handed to the extension, and in the
+ * vendored adapter's own static import.
  *
  * This is not a style preference — it is the only way that resolves. pi loads
  * extensions through jiti with a map of host modules, and that map applies to static

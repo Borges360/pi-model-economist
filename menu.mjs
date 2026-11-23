@@ -1,20 +1,26 @@
 /**
- * The `/economist` dashboard.
+ * The `/economist` settings panel and its read-only views.
  *
- * One screen that shows every routing knob with the value it currently has, so
- * configuring the router is "look, press enter, done" instead of reading a command
- * reference. `SettingsList` cycles enum values in place and opens submenus for the
- * things that need a list (candidate pool, last decision, dry run). Changes remain
- * in a draft until Ctrl+S; saving keeps the screen open.
- * `onChange(id, value, update, target)` returns the
- * note shown to the user; `target` carries the pool member a submenu edit applies to.
+ * The root command opens one panel that shows every routing knob with the value it
+ * currently has. Edits stay in a draft until Ctrl+S; saving keeps the panel open; Esc
+ * in a field returns, Esc on a draft warns and a second Esc discards. Pool editing,
+ * the dry-run simulation and the read-only screens (session economics, last decision,
+ * command reference) are rows of the same panel that hand over to their own screen and
+ * come back to the panel afterwards.
  *
- * pi-tui and the coding-agent theme helpers are host-provided. They are imported
- * lazily so `node --test`, JSON and print modes never need them.
+ * The panel itself is the vendored Pi adapter in `vendor/inteiro-terminal/` (see
+ * `vendor/THIRD_PARTY_NOTICES.md`). It imports `@earendil-works/pi-tui` statically, which
+ * is the only import form Pi's extension loader maps to the host modules. This module
+ * owns the product side only: fields, choices, actions, texts and draft helpers.
  */
 
-import { localeName, translate } from './lib/i18n.mjs';
-import { v2Copy, causalExplain } from './lib/v2-ui.mjs';
+import { localeName, normalizeLocale, translate } from './lib/i18n.mjs';
+import { causalExplain } from './lib/v2-ui.mjs';
+import { openPiSettings, openPiWorkspace } from './vendor/inteiro-terminal/pi.js';
+import { SettingsSession } from './vendor/inteiro-terminal/settings.js';
+import { WorkspaceModel } from './vendor/inteiro-terminal/workspace.js';
+
+export { openPiSettings, SettingsSession };
 
 /** `openrouter/qwen/turbo` → `qwen/turbo`: only the provider is dropped. */
 export function shortName(id) {
@@ -22,126 +28,7 @@ export function shortName(id) {
   return parts.length > 2 ? parts.slice(1).join('/') : parts.at(-1) ?? '';
 }
 
-/** The main screen, built from live config so the values shown are the truth. */
-export function dashboardItems({ conf, pool, scoped, last, notes = {}, locale = 'pt-BR' }) {
-  const t = (key, values) => translate(locale, key, values);
-  const thinking = conf.thinking ?? {};
-  const scope = conf.scope ?? {};
-  const modeKey = ['hybrid', 'rules', 'jev', 'small-llm', 'learned', 'manual', 'off'].includes(conf.mode)
-    ? `desc.mode.${conf.mode}`
-    : 'desc.mode.fallback';
-  const policyKey = ['economy', 'balanced', 'quality', 'latency'].includes(conf.policy)
-    ? `desc.policy.${conf.policy}`
-    : 'desc.policy.fallback';
-  const rows = [
-    {
-      id: 'language',
-      label: t('language.row'),
-      currentValue: localeName(locale),
-      submenu: true,
-      description: t('language.description'),
-    },
-    {
-      id: 'enabled',
-      label: t('row.enabled'),
-      currentValue: conf.enabled ? 'on' : 'off',
-      values: ['on', 'off'],
-      description: t('desc.enabled'),
-    },
-    {
-      id: 'cadence',
-      label: t('row.cadence'),
-      currentValue: conf.cadence ?? 'prompt',
-      values: ['session', 'prompt', 'subagent'],
-      description: t(`desc.cadence.${conf.cadence ?? 'prompt'}`),
-    },
-    {
-      id: 'mode',
-      label: t('row.mode'),
-      currentValue: conf.mode,
-      values: notes.modes ?? [],
-      description: t(modeKey),
-    },
-    {
-      id: 'policy',
-      label: t('row.policy'),
-      currentValue: conf.policy,
-      values: notes.policies ?? [],
-      description: t(policyKey),
-    },
-    {
-      id: 'thinking',
-      label: t('row.thinking'),
-      currentValue: thinking.mode ?? 'auto',
-      values: ['auto', 'follow', 'fixed'],
-      description: t('desc.thinking'),
-    },
-    {
-      id: 'ceiling',
-      label: t('row.ceiling'),
-      currentValue: thinking.ceiling ?? 'high',
-      values: (notes.levels ?? []).filter((l) => l !== 'off'),
-      description: t('desc.ceiling'),
-    },
-    {
-      id: 'fixed',
-      label: t('row.fixed'),
-      currentValue: thinking.fixed ?? 'medium',
-      values: notes.levels ?? [],
-      description: t('desc.fixed'),
-    },
-    {
-      id: 'scope',
-      label: t('row.scope'),
-      currentValue: scope.source ?? 'scoped',
-      values: ['scoped', 'all'],
-      description: t('desc.scope'),
-    },
-    {
-      id: 'pool',
-      label: t('row.pool'),
-      currentValue: t('value.pool', { count: pool.length }),
-      submenu: true,
-      description: t('desc.pool', { count: scoped }),
-    },
-    {
-      id: 'explain',
-      label: t('row.explain'),
-      currentValue: last
-        ? `${shortName(last.selectedModelId)}:${last.selectedThinkingLevel ?? 'off'}`
-        : t('value.none'),
-      submenu: true,
-      description: t('desc.explain'),
-    },
-    {
-      id: 'simulate',
-      label: t('row.simulate'),
-      currentValue: '—',
-      submenu: true,
-      description: t('desc.simulate'),
-    },
-    {
-      id: 'help',
-      label: t('row.help'),
-      currentValue: '—',
-      submenu: true,
-      description: t('desc.help'),
-    },
-  ];
-  if (!notes.v2) return rows;
-  const copy = v2Copy(locale);
-  const v2 = [
-    { id: 'optimization', label: copy.mode, currentValue: conf.preset ?? 'custom', submenu: true, description: copy.modeDescription },
-    { id: 'control-settings', label: copy.control, currentValue: conf.control ?? 'advisory', submenu: true, description: copy.controlDescription },
-    { id: 'context-settings', label: copy.context, currentValue: conf.context?.enabled === false ? 'off' : 'on', submenu: true, description: copy.contextDescription },
-    { id: 'economics', label: copy.metrics, currentValue: conf.rollout?.stage ?? 'observe', submenu: true, description: copy.metricsDescription },
-    { id: 'privacy-settings', label: copy.privacy, currentValue: conf.executor?.dataPolicy ?? 'allow', submenu: true, description: copy.advancedDescription },
-    { id: 'advanced', label: copy.advanced, currentValue: '…', submenu: true, description: copy.advancedDescription },
-  ];
-  return conf.preset === 'custom' || conf.migration?.fromVersion ? [...rows, ...v2] : [rows[0], rows[1], ...v2, ...rows.filter(r => ['pool', 'explain', 'simulate', 'help'].includes(r.id))];
-}
-
-/** Human-readable last decision, used by the explain submenu. */
+/** Human-readable last decision, used by the "Last decision" view and `/economist explain`. */
 export function explainLines(last, conf, { calibration = null, locale = 'pt-BR' } = {}) {
   const t = (key, values) => translate(locale, key, values);
   if (!last)
@@ -167,6 +54,7 @@ export function explainLines(last, conf, { calibration = null, locale = 'pt-BR' 
       })
     : t('explain.noCalibrationLine');
   const risks = (a.risks ?? []).join(', ') || t('value.noneRisk');
+  const unknown = t('value.unknown');
   return [
     t('explain.modelEffort', { value: `${last.selectedModelId}:${last.selectedThinkingLevel ?? 'off'}` }),
     t('explain.reason', { value: (last.reasonCodes ?? []).join(' · ') || t('value.empty') }),
@@ -200,11 +88,24 @@ export function explainLines(last, conf, { calibration = null, locale = 'pt-BR' 
       scope: conf.scope?.source ?? 'scoped',
     }),
     ...(last.economicsVersion === 2 ? [...causalExplain(last, locale),
-      `Context plan: ${last.contextPlan?.externalize?.length ?? 0} artifacts · topology ${last.contextPlan?.topology?.topology ?? 'single-agent'}`,
-      `Cache: ${last.cacheImpact?.reason ?? 'unknown'} · probability ${last.cacheImpact?.probability ?? 'unknown'}`,
-      `Switch: ${last.switchPlan?.reason ?? 'deterministic baseline'} · expected gain ${usd(last.switchPlan?.deltaUsd)}`,
-      `Cost decomposition: ${last.costBreakdown ? Object.entries(last.costBreakdown).map(([key, value]) => `${key}=${typeof value === 'number' ? usd(value) : value}`).join(' · ') : 'unknown'}`,
-      `Bandit: ${last.bandit?.shadowChoice ?? 'off'} · propensity ${last.bandit?.propensity ?? 1}`,
+      t('explain.contextPlan', {
+        artifacts: last.contextPlan?.externalize?.length ?? 0,
+        topology: last.contextPlan?.topology?.topology ?? 'single-agent',
+      }),
+      t('explain.cacheImpact', {
+        reason: last.cacheImpact?.reason ?? unknown,
+        probability: last.cacheImpact?.probability ?? unknown,
+      }),
+      t('explain.switch', {
+        reason: last.switchPlan?.reason ?? t('explain.deterministicBaseline'),
+        gain: usd(last.switchPlan?.deltaUsd),
+      }),
+      t('explain.costDecomposition', {
+        value: last.costBreakdown
+          ? Object.entries(last.costBreakdown).map(([key, value]) => `${key}=${typeof value === 'number' ? usd(value) : value}`).join(' · ')
+          : unknown,
+      }),
+      t('explain.bandit', { choice: last.bandit?.shadowChoice ?? 'off', propensity: last.bandit?.propensity ?? 1 }),
     ] : []),
   ];
 }
@@ -215,7 +116,7 @@ export function tierForPool(index, total) {
   return Math.min(5, Math.max(1, 1 + Math.round((index * 4) / (total - 1))));
 }
 
-/** Actions offered for one pool member. */
+/** What each tier is for, with the current one marked. */
 export function candidateActions(current, locale = 'pt-BR') {
   const t = (key, values) => translate(locale, key, values);
   const tier = Number(current?.tier) || 1;
@@ -243,20 +144,20 @@ export function candidateActions(current, locale = 'pt-BR') {
 }
 
 /**
- * Test seam: pi-tui and the coding-agent theme helpers are host-provided and are
- * resolved lazily so `node --test` never needs them. Tests that drive the dashboard
- * inject fakes here; production leaves them unset and takes the dynamic import.
+ * Test seam: the host modules index.ts imported statically. The panel no longer draws
+ * with them (the vendored adapter imports pi-tui itself), but `runOperation` still uses
+ * the host `Text`, and the provenance check below runs against what the host handed us.
  */
 export const host = { tui: undefined, agent: undefined };
 
 /** Own a cancellable operation without replacing the editor/footer or logging input data. */
-export async function runOperation(ctx, title, fn, signal) {
+export async function runOperation(ctx, title, fn, signal, { cancelHint = 'Esc · cancel' } = {}) {
   if (!host.tui?.Text || ctx.mode !== 'tui' || !ctx.ui.custom) return fn(signal);
   const controller = new AbortController();
   const combined = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
   const result = await ctx.ui.custom((tui, theme, keys, done) => {
     let disposed = false;
-    const text = new host.tui.Text(theme.fg('accent', `${title}\nEsc · cancel`));
+    const text = new host.tui.Text(theme.fg('accent', `${title}\n${cancelHint}`));
     Promise.resolve().then(() => fn(combined)).then(value => { if (!disposed) { disposed = true; done({ value }); } },
       error => { if (!disposed) { disposed = true; done({ error }); } });
     return { render: width => text.render(width), invalidate: () => text.invalidate?.(),
@@ -270,9 +171,7 @@ export async function runOperation(ctx, title, fn, signal) {
  * Wire the host modules the entry point (`index.ts`) imported statically. Static
  * import at the entry is the only path that resolves under pi's loader: a dynamic
  * `await import('@earendil-works/pi-tui')` from inside an extension falls through to
- * Node's native resolver and fails with ERR_MODULE_NOT_FOUND. Called once at install
- * time; the lazy import in `runDashboard` stays as the fallback for whoever loads
- * `extension.mjs` directly (for example `pi -e ./extension.mjs`).
+ * Node's native resolver and fails with ERR_MODULE_NOT_FOUND. Called once at install time.
  */
 export function provideHost(tui, agent) {
   if (tui) host.tui = tui;
@@ -281,436 +180,265 @@ export function provideHost(tui, agent) {
 }
 
 /**
- * Which export the screen needs, and from which host package. `Container` is a
- * pi-tui export (`pi-tui/dist/index.d.ts:32`); `DynamicBorder`, the two list themes
- * and the key-hint helpers are pi-coding-agent exports
- * (`pi-coding-agent/dist/index.d.ts:36-37`). Getting this wrong is not a cosmetic
- * mistake: `DynamicBorder` used to be destructured off pi-tui, came back `undefined`,
- * and `new DynamicBorder(...)` threw inside the `ctx.ui.custom()` factory — so
- * `/economist` never showed a menu, while a fake that repeated the same lie kept the
- * unit tests green. The smoke script asserts this table against the installed host.
+ * The host surface the panel depends on. The vendored adapter imports `Input`,
+ * `matchesKey`, `truncateToWidth` and `visibleWidth` from pi-tui
+ * (`vendor/inteiro-terminal/pi.js:2`); `runOperation` draws with pi-tui `Text`. Nothing
+ * from pi-coding-agent is needed any more: the panel paints with the theme that
+ * `ctx.ui.custom` hands over. The smoke script asserts this table against the installed host.
  */
 export const HOST_EXPORTS = {
-  '@earendil-works/pi-tui': ['Container', 'SettingsList', 'SelectList', 'Text', 'Input'],
-  '@earendil-works/pi-coding-agent': [
-    'DynamicBorder',
-    'getSettingsListTheme',
-    'getSelectListTheme',
-  ],
-};
-/** Optional niceties: used when present, literal fallbacks when not.
- * `keyHint`/`keyText` are pi-coding-agent exports (same index.d.ts line). */
-export const OPTIONAL_EXPORTS = {
-  '@earendil-works/pi-coding-agent': ['keyHint', 'keyText'],
+  '@earendil-works/pi-tui': ['Input', 'matchesKey', 'truncateToWidth', 'visibleWidth', 'Text'],
 };
 
 /** Name the exports the host does not actually provide (missing module counts as every export). */
-export function missingHostExports(tuiPkg, agentPkg) {
-  const mods = {
-    '@earendil-works/pi-tui': tuiPkg,
-    '@earendil-works/pi-coding-agent': agentPkg,
-  };
+export function missingHostExports(tuiPkg) {
+  const mods = { '@earendil-works/pi-tui': tuiPkg };
   return Object.entries(HOST_EXPORTS).flatMap(([name, exports]) =>
     exports.filter((key) => typeof mods[name]?.[key] !== 'function').map((key) => `${name}.${key}`),
   );
 }
 
-/** First useful line of a resolution failure, for the degradation notice. */
-function why(error) {
-  return String(error?.code ?? error?.message ?? error).split('\n')[0];
+/** Flat panel values from the nested `modelEconomist` section. */
+export function panelValues(conf, locale) {
+  return {
+    language: normalizeLocale(locale),
+    enabled: conf.enabled === true,
+    preset: conf.preset ?? 'custom',
+    control: conf.control ?? 'advisory',
+    contextEnabled: conf.context?.enabled !== false,
+    retrievalBudget: String(conf.context?.retrieval?.budgetTokens ?? 2048),
+    privacyExecutor: conf.executor?.dataPolicy ?? 'allow',
+    privacyClassifier: conf.classifier?.dataPolicy ?? 'redact',
+    privacyTelemetry: conf.telemetry?.dataPolicy ?? 'redact',
+    cadence: conf.cadence ?? 'prompt',
+    mode: conf.mode ?? 'hybrid',
+    policy: conf.policy ?? 'balanced',
+    thinking: conf.thinking?.mode ?? 'auto',
+    ceiling: conf.thinking?.ceiling ?? 'high',
+    fixed: conf.thinking?.fixed ?? 'medium',
+    scope: conf.scope?.source ?? 'scoped',
+    rollout: conf.rollout?.stage ?? 'observe',
+    algorithm: conf.adaptive?.algorithm ?? 'expected-cost',
+    bandit: conf.adaptive?.bandit ?? 'shadow',
+    delegation: conf.topology?.enabled !== false,
+  };
 }
 
-/**
- * Degradation is allowed; silence is not. The caller still prints the text panel,
- * and the user learns which host capability was missing instead of staring at a
- * command that appears to do nothing.
- */
-function degrade(ctx, reason) {
-  try {
-    ctx?.ui?.notify?.(`Economist sem painel interativo: ${reason}`, 'warning');
-  } catch {
-    // A broken notify must not replace the reason with a second error.
-  }
-  return false;
-}
+/** Panel field id → the text-command field it writes (`v2Patch` / `FIELDS` in extension.mjs). */
+export const PANEL_COMMANDS = Object.freeze({
+  preset: 'preset',
+  control: 'control',
+  contextEnabled: 'context-enabled',
+  retrievalBudget: 'retrieval-budget',
+  privacyExecutor: 'privacy',
+  privacyClassifier: 'privacy-classifier',
+  privacyTelemetry: 'privacy-telemetry',
+  rollout: 'rollout',
+  algorithm: 'algorithm',
+  bandit: 'bandit',
+  delegation: 'delegation',
+  cadence: 'cadence',
+  mode: 'mode',
+  policy: 'policy',
+  thinking: 'thinking',
+  ceiling: 'ceiling',
+  fixed: 'fixed',
+  scope: 'scope',
+});
 
 /**
- * Show the dashboard. Changes stay in a draft until the user explicitly saves;
- * Esc at the root warns before discarding. Returns false when the host cannot run
- * a custom TUI screen, so the caller falls back to the status panel. `host`
- * argument injects the real pi-tui and coding-agent modules in tests; production
- * resolves them lazily.
+ * Every field of the root panel, ordered by how often it matters: language, routing,
+ * the v2 priority and its consequences, then the individual routing knobs.
+ *
+ * `options.enums` carries the allowed ids from the extension (one table for commands and
+ * panel); `options.values` adds a stored value that is outside the list, so an untouched
+ * legacy value never blocks a save; `options.locks` maps field id → lock source.
  */
-export async function runDashboard(deps, injection = {}) {
-  const {
-    ctx,
-    title,
-    getTitle,
-    items,
-    onChange,
-    onSave,
-    onDiscard,
-    isDirty = () => false,
-    menus,
-    locale = 'pt-BR',
-    getLocale,
-  } = deps;
-  const currentLocale = () => getLocale?.() ?? locale;
-  const t = (key, values) => translate(currentLocale(), key, values);
-  if (ctx.mode !== 'tui' || typeof ctx.ui.custom !== 'function') return false;
-  let tuiPkg = injection.tuiPkg ?? host.tui,
-    agentPkg = injection.agentPkg ?? host.agent;
-  // Fallback only: production arrives with `host` already wired by index.ts.
-  if (!tuiPkg) {
-    try {
-      tuiPkg = await import('@earendil-works/pi-tui');
-    } catch (error) {
-      return degrade(ctx, `@earendil-works/pi-tui indisponível (${why(error)})`);
-    }
-  }
-  if (!agentPkg) {
-    try {
-      agentPkg = await import('@earendil-works/pi-coding-agent');
-    } catch (error) {
-      return degrade(ctx, `@earendil-works/pi-coding-agent indisponível (${why(error)})`);
-    }
-  }
-  const missing = missingHostExports(tuiPkg, agentPkg);
-  if (missing.length)
-    return degrade(
-      ctx,
-      `missing exports: ${missing.join(', ')} — this Pi client does not expose the expected custom screen`,
-    );
-  const { Container, SettingsList, SelectList, Text, Input } = tuiPkg;
-  const {
-    DynamicBorder,
-    getSettingsListTheme,
-    getSelectListTheme,
-    keyHint,
-    keyText,
-  } = agentPkg;
-  const changed = [];
-  await ctx.ui.custom((tuiRef, theme, keybindings, done) => {
-    const cancel = (data) => keybindings?.matches?.(data, 'tui.select.cancel') === true;
-    /**
-     * Hint lines read the user's OWN keybinding config (`keyHint`/`keyText`) instead
-     * of hardcoding "Enter"/"Esc" in prose, and fall back to the literal wording when
-     * an older host does not export them. Keys the code *acts on* always go through
-     * `keybindings.matches` — never a raw byte.
-     */
-    const navHint =
-      typeof keyText === 'function'
-        ? `  ${keyText('tui.select.up')}/${keyText('tui.select.down')} ${t('nav.navigate')} · ${t('nav.filter')} · ${keyText('tui.select.confirm')} ${t('nav.choose')} · ${keyText('tui.select.cancel')} ${t('nav.back')}`
-        : `  ↑↓ ${t('nav.navigate')} · ${t('nav.filter')} · enter ${t('nav.choose')} · esc ${t('nav.back')}`;
-    const backHint =
-      typeof keyHint === 'function' ? `  ${keyHint('tui.select.cancel', t('nav.back'))}` : `  esc ${t('nav.back')}`;
-    let disposed = false;
-    let submenuOpen = false;
-    let discardArmed = false;
-    let saving = false;
-    let operationController;
-    let operationGeneration = 0;
-    const pendingNotes = [];
-    const box = new Container();
-    box.addChild(new DynamicBorder((str) => theme.fg('accent', str)));
-    const titleText = new Text('');
-    box.addChild(titleText);
-    const footer = new Text('');
-    const list = new SettingsList(
-      items,
-      Math.min(items.length, 12),
-      getSettingsListTheme(),
-      async (id, value) => {
-        try {
-          const note = await onChange(id, value, (target, replacement) =>
-            list.updateValue(target, replacement),
-            null,
-          );
-          discardArmed = false;
-          if (note) pendingNotes.push(note);
-          refresh();
-          ctx.ui.notify(note ? t('notice.draft', { note }) : t('notice.updated'), 'info');
-          return note;
-        } catch (error) {
-          ctx.ui.notify(t('notice.notUpdated', { error: error.message }), 'error');
-          refresh();
-          throw error;
-        }
-      },
-      () => rootEscape(),
-    );
-    const dirty = () => Boolean(isDirty());
-    const refresh = () => {
-      const hasDraft = dirty();
-      const heading = `${getTitle?.() ?? title}${hasDraft ? ` · ${t('title.draft')}` : ''}`;
-      const prompt = hasDraft ? `  ${t('footer.dirty')}` : `  ${t('footer.clean')}`;
-      titleText.setText(theme.fg('accent', theme.bold ? theme.bold(heading) : heading));
-      footer.setText(theme.fg('dim', saving ? `${prompt} · ${t('footer.saving')}` : prompt));
-      tuiRef.requestRender();
-    };
-    const finish = () => {
-      if (disposed) return;
-      disposed = true;
-      operationGeneration++;
-      operationController?.abort(Error('dashboard closed'));
-      operationController = undefined;
-      done({ changed });
-    };
-    const rootEscape = () => {
-      if (saving) {
-        ctx.ui.notify(t('notice.saving'), 'warning');
-        return;
-      }
-      if (!dirty()) {
-        finish();
-        return;
-      }
-      if (!discardArmed) {
-        discardArmed = true;
-        ctx.ui.notify(t('notice.unsaved'), 'warning');
-        tuiRef.requestRender();
-        return;
-      }
-      try {
-        onDiscard?.();
-        pendingNotes.length = 0;
-        discardArmed = false;
-        finish();
-      } catch (error) {
-        discardArmed = false;
-        ctx.ui.notify(t('notice.discardFailed', { error: error.message }), 'error');
-        refresh();
-      }
-    };
-    const save = async () => {
-      if (saving || disposed) return;
-      discardArmed = false;
-      if (!dirty()) {
-        pendingNotes.length = 0;
-        try {
-          const path = await onSave?.();
-          if (!disposed) ctx.ui.notify(path ? t('notice.savedCurrent', { path }) : t('notice.noChanges'), 'info');
-        } catch (error) {
-          if (!disposed) ctx.ui.notify(t('notice.checkFailed', { error: error.message }), 'error');
-        }
-        return;
-      }
-      saving = true;
-      tuiRef.requestRender();
-      try {
-        const path = await onSave?.();
-        if (disposed) return;
-        if (dirty()) throw Error(t('notice.dirtyAfterSave'));
-        if (pendingNotes.length) changed.push(...pendingNotes.splice(0));
-        ctx.ui.notify(path ? t('notice.savedAt', { path }) : t('notice.saved'), 'info');
-      } catch (error) {
-        if (!disposed) ctx.ui.notify(t('notice.saveFailed', { error: error.message }), 'error');
-      } finally {
-        saving = false;
-        if (!disposed) refresh();
-      }
-    };
-    refresh();
-    const frame = (heading) => {
-      const inner = new Container();
-      inner.addChild(new Text(theme.fg('accent', heading), 1, 0));
-      return inner;
-    };
-    /** A searchable list inside a submenu; esc returns to the main screen. */
-    const screen = (heading, rows, onPick, onClose) => {
-      const inner = frame(heading);
-      const select = new SelectList(rows, Math.min(rows.length || 1, 8), getSelectListTheme());
-      select.onSelect = (item) => onPick(item.value);
-      select.onCancel = () => onClose();
-      inner.addChild(select);
-      inner.addChild(
-        new Text(theme.fg('dim', navHint.trim()), 1, 0),
-      );
-      return {
-        render: (width) => inner.render(width),
-        invalidate: () => inner.invalidate(),
-        handleInput: (data) => {
-          select.handleInput(data);
-          tuiRef.requestRender();
-        },
-      };
-    };
-    const textScreen = (heading, lines, onClose) => {
-      const inner = frame(heading);
-      for (const line of lines) inner.addChild(new Text(theme.fg('muted', `  ${line}`), 0, 0));
-      inner.addChild(new Text(theme.fg('dim', backHint.trim()), 1, 0));
-      return {
-        render: (width) => inner.render(width),
-        invalidate: () => inner.invalidate(),
-        handleInput: (data) => {
-          if (cancel(data)) onClose();
-        },
-      };
-    };
-    const panels = {
-      language: (_current, close) => screen(
-        t('panel.language'),
-        menus.language(),
-        async (value) => {
-          try {
-            const note = await onChange('language', value, (target, replacement) =>
-              list.updateValue(target, replacement),
-            );
-            discardArmed = false;
-            if (note) pendingNotes.push(note);
-            ctx.ui.notify(note ? t('notice.draft', { note }) : t('notice.updated'), 'info');
-            close();
-          } catch (error) {
-            ctx.ui.notify(t('notice.notUpdated', { error: error.message }), 'error');
-          }
-          refresh();
-        },
-        () => close(),
-      ),
-      pool: (_current, close) => {
-        let active;
-        const showPool = () => {
-          active = screen(t('panel.pool'), menus.pool(), open, () => close());
-          tuiRef.requestRender();
-        };
-        const open = (id) => {
-          active = screen(t('panel.edit', { id }), menus.candidateRows(id), async (value) => {
-            const note = await onChange('poolEdit', value, () => {}, id);
-            discardArmed = false;
-            if (note) pendingNotes.push(note);
-            ctx.ui.notify(note ? t('notice.draft', { note }) : t('notice.updated'), 'info');
-            list.updateValue('pool', t('value.pool', { count: menus.pool().length }));
-            refresh();
-            showPool();
-          }, showPool);
-          tuiRef.requestRender();
-        };
-        showPool();
-        return {
-          render: (width) => active.render(width),
-          invalidate: () => active.invalidate(),
-          handleInput: (data) => active.handleInput(data),
-        };
-      },
-      explain: (_current, close) => textScreen(t('panel.explain'), menus.explain(), () => close()),
-      help: (_current, close) => textScreen(t('panel.help'), menus.help(), () => close()),
-      simulate: (_current, close) => {
-        const inner = frame(t('panel.simulate'));
-        const input = new Input({ placeholder: t('panel.simulatePlaceholder') });
-        inner.addChild(input);
-        const result = new Text(
-          theme.fg('dim', `  ${t('panel.simulateDisclaimer')}`),
-          0,
-          0,
-        );
-        inner.addChild(result);
-        let showing = false;
-        let pending = null;
-        let generation = 0;
-        const run = (text) => {
-          if (!text || showing) return pending;
-          showing = true;
-          discardArmed = false;
-          const controller = new AbortController();
-          operationController = controller;
-          const current = ++operationGeneration;
-          generation = current;
-          result.setText(theme.fg('dim', `  ${t('panel.calculating')}`));
-          pending = Promise.resolve(menus.simulate(text, { signal: controller.signal }))
-            .then((lines) => {
-              if (!disposed && generation === operationGeneration && !controller.signal.aborted)
-                result.setText(lines.map((l) => `  ${l}`).join('\n'));
-            })
-            .catch((error) => {
-              if (!disposed && generation === operationGeneration && !controller.signal.aborted)
-                result.setText(theme.fg('error', `  ${t('panel.simulationError', { error: error.message })}`));
-            })
-            .finally(() => {
-              if (generation === operationGeneration) {
-                showing = false;
-                operationController = undefined;
-                if (!disposed) tuiRef.requestRender();
-              }
-            });
-          return pending;
-        };
-        // The host's own Input decides what "submit" means (`tui.input.submit`), so the
-        // screen never compares raw bytes: `input.d.ts` documents this callback.
-        input.onSubmit = run;
-        return {
-          render: (width) => inner.render(width),
-          invalidate: () => inner.invalidate(),
-          handleInput: (data) => {
-            if (cancel(data)) {
-              if (showing) {
-                operationGeneration++;
-                generation = -1;
-                operationController?.abort(Error('simulation cancelled'));
-                operationController = undefined;
-                showing = false;
-                result.setText(theme.fg('dim', `  ${t('panel.simulationCancelled')}`));
-                tuiRef.requestRender();
-                return;
-              }
-              close();
-              return;
-            }
-            if (showing) return pending;
-            // Returning the child's promise lets a caller (and the tests) await the
-            // dry run instead of counting ticks.
-            return input.handleInput(data);
-          },
-        };
-      },
-    };
-    for (const item of items) {
-      if (item.submenu !== true) continue;
-      const panel = panels[item.id] ?? ((_current, close) => {
-        if (item.id === 'economics') return textScreen(item.label, menus.economics(), () => close());
-        return screen(item.label, menus[item.id](), async value => {
-          try {
-            const [field, ...parts] = value.split(':');
-            const note = await onChange(field, parts.join(':'), (id, replacement) => list.updateValue(id, replacement));
-            if (note) pendingNotes.push(note);
-            close(); refresh();
-          } catch (error) { ctx.ui.notify(error.message, 'error'); refresh(); }
-        }, () => close());
-      });
-      item.submenu = (currentValue, close) => {
-        submenuOpen = true;
-        discardArmed = false;
-        return panel(currentValue === '—' ? undefined : currentValue, (...args) => {
-          submenuOpen = false;
-          discardArmed = false;
-          const result = close(...args);
-          refresh();
-          return result;
-        });
-      };
-    }
-    box.addChild(list);
-    box.addChild(footer);
-    box.addChild(new DynamicBorder((str) => theme.fg('accent', str)));
-    return {
-      render: (width) => box.render(width),
-      invalidate: () => box.invalidate(),
-      handleInput: (data) => {
-        if (data === '\u0013' || String(data).toLowerCase() === 'ctrl+s') {
-          return save().finally(() => refresh());
-        }
-        if (cancel(data)) {
-          if (submenuOpen) list.handleInput(data);
-          else rootEscape();
-          refresh();
-          return;
-        }
-        if (submenuOpen) list.handleInput(data);
-        else list.handleInput(data);
-        discardArmed = false;
-        refresh();
-        tuiRef.requestRender();
-      },
-    };
+export function economistFields(locale, { enums, values = {}, locks = {} }) {
+  const t = (key, vars) => translate(locale, key, vars);
+  const ids = (id, list, label = (v) => v) => {
+    const all = [...list];
+    if (typeof values[id] === 'string' && !all.includes(values[id])) all.push(values[id]);
+    return all.map((v) => ({ id: v, label: label(v) }));
+  };
+  const lock = (id) => (locks[id] ? { locked: { source: locks[id] } } : {});
+  const select = (id, list, label, description, labeller) => ({
+    id,
+    kind: 'select',
+    label,
+    description,
+    choices: ids(id, list, labeller),
+    ...lock(id),
   });
-  return { changed };
+  const boolean = (id, label, description) => ({ id, kind: 'boolean', label, description, ...lock(id) });
+  const known = (prefix) => (v) => {
+    try {
+      return t(`${prefix}.${v}`);
+    } catch {
+      return v;
+    }
+  };
+  return [
+    select('language', ['en', 'pt-BR'], t('language.row'), t('language.description'), (v) => localeName(v)),
+    boolean('enabled', t('row.enabled'), t('desc.enabled')),
+    select('preset', enums.presets, t('row.preset'), t('desc.preset'), known('choice.preset')),
+    select('control', enums.controls, t('row.control'), t('desc.control'), known('choice.control')),
+    boolean('contextEnabled', t('row.contextEnabled'), t('desc.contextEnabled')),
+    select('retrievalBudget', ['1024', '2048', '4096', '8192'], t('row.retrievalBudget'), t('desc.retrievalBudget'),
+      (v) => t('value.tokens', { count: v })),
+    select('privacyExecutor', ['deny', 'redact', 'allow'], t('row.privacyExecutor'), t('desc.privacyExecutor'), known('choice.privacy')),
+    select('privacyClassifier', ['deny', 'redact', 'allow'], t('row.privacyClassifier'), t('desc.privacyClassifier'), known('choice.privacy')),
+    select('privacyTelemetry', ['deny', 'redact', 'allow'], t('row.privacyTelemetry'), t('desc.privacyTelemetry'), known('choice.privacy')),
+    select('cadence', enums.cadences, t('row.cadence'), t('desc.cadence')),
+    select('mode', enums.modes, t('row.mode'), t('desc.mode.fallback')),
+    select('policy', enums.policies, t('row.policy'), t('desc.policy.fallback')),
+    select('thinking', enums.thinking, t('row.thinking'), t('desc.thinking')),
+    select('ceiling', enums.levels.filter((l) => l !== 'off'), t('row.ceiling'), t('desc.ceiling')),
+    select('fixed', enums.levels, t('row.fixed'), t('desc.fixed')),
+    select('scope', enums.scopes, t('row.scope'), t('desc.scope'), known('choice.scope')),
+    select('rollout', enums.stages, t('row.rollout'), t('desc.rollout')),
+    select('algorithm', ['expected-cost', 'cascade', 'bandit'], t('row.algorithm'), t('desc.algorithm')),
+    select('bandit', ['off', 'shadow', 'active'], t('row.bandit'), t('desc.bandit')),
+    boolean('delegation', t('row.delegation'), t('desc.delegation')),
+  ];
+}
+
+/** Fields of the pool screen: membership, tier and tools for each candidate. */
+export function poolFields(locale, rows, { scopeLocked = () => false } = {}) {
+  const t = (key, vars) => translate(locale, key, vars);
+  return rows.flatMap((row) => {
+    const name = shortName(row.value);
+    return [
+      {
+        id: `member:${row.value}`,
+        kind: 'boolean',
+        label: t('pool.member', { model: name }),
+        description: t('desc.pool.member', { model: row.value }),
+        ...(scopeLocked(row.value) ? { locked: { source: t('panel.source.scope') } } : {}),
+      },
+      {
+        id: `tier:${row.value}`,
+        kind: 'select',
+        label: t('pool.tier', { model: name }),
+        description: t('desc.pool.tier'),
+        choices: [1, 2, 3, 4, 5].map((tier) => ({
+          id: String(tier),
+          label: `${t('candidate.tier', { tier })} · ${t(`action.tier${tier}`)}`,
+        })),
+        format: (value) => t('candidate.tier', { tier: value }),
+      },
+      {
+        id: `tools:${row.value}`,
+        kind: 'boolean',
+        label: t('pool.tools', { model: name }),
+        description: t('desc.pool.tools'),
+      },
+    ];
+  });
+}
+
+/** Initial pool values: everyone listed is a member, with the tier/tools it has now. */
+export function poolValues(rows) {
+  return Object.fromEntries(
+    rows.flatMap((row) => [
+      [`member:${row.value}`, true],
+      [`tier:${row.value}`, String(Math.min(5, Math.max(1, Number(row.tier) || 1)))],
+      [`tools:${row.value}`, row.tools === true],
+    ]),
+  );
+}
+
+/**
+ * Apply a value to a field of an open session through its public editing API, as a
+ * keyboard edit would (validated, and leaving the focus where the user is). Used for
+ * preset/control consequences and for carrying a draft across read-only screens.
+ */
+export function setDraftValue(session, id, value) {
+  const field = session.fields.find((f) => f.id === id);
+  if (!field || field.locked || field.override || session.saving) return false;
+  if (JSON.stringify(session.draft[id]) === JSON.stringify(value)) return true;
+  const focus = session.focusedId;
+  session.begin(id);
+  if (session.editing?.id !== id) {
+    session.focusedId = focus;
+    return false;
+  }
+  session.edit(value);
+  const ok = session.confirmEdit();
+  if (!ok) session.abandonEdit();
+  session.focusedId = focus;
+  return ok;
+}
+
+/** Re-apply a draft (from a previous panel instance) on top of a fresh session. */
+export function restoreDraft(session, draft) {
+  if (!draft) return;
+  for (const field of session.fields)
+    if (field.id in draft && JSON.stringify(draft[field.id]) !== JSON.stringify(session.persisted[field.id]))
+      setDraftValue(session, field.id, draft[field.id]);
+}
+
+/**
+ * The dry-run screen: one request field and a cancellable "Run simulation" action. `run`
+ * receives the request text and an AbortSignal and returns the explanation lines; the
+ * screen closes with them as `actionValue`. A result that arrives after Esc is dropped by
+ * the adapter (the action reports that it finished too late and the screen stays open).
+ */
+export function simulationScreen(locale, { run }) {
+  const t = (key, vars) => translate(locale, key, vars);
+  const missing = (value) => (String(value ?? '').trim() ? undefined : t('panel.simulationNoText'));
+  const session = new SettingsSession([{
+    id: 'request',
+    kind: 'text',
+    label: t('simulate.request'),
+    description: t('desc.simulate.request'),
+    validate: missing,
+  }], { request: '' }, { locale });
+  return {
+    session,
+    title: t('simulate.title'),
+    scope: t('panel.simulateDisclaimer'),
+    // Nothing on this screen is persisted: Ctrl+S is left to the host, and the bar's
+    // Save explains where to go instead of pretending to write something.
+    ctrlS: false,
+    formatError: (error) => String(error?.message ?? error ?? '').trim() || undefined,
+    persist: async () => {
+      throw Error(t('simulate.nothingToSave'));
+    },
+    actions: [{
+      id: 'run',
+      label: t('simulate.run'),
+      description: t('desc.simulate.run'),
+      effect: 'local',
+      timeoutMs: 30_000,
+      disabled: (draft) => missing(draft.request),
+      run: async (draft, signal) => {
+        const lines = await run(String(draft.request).trim(), signal);
+        signal.throwIfAborted();
+        return { message: lines[0], value: lines, close: true };
+      },
+    }],
+  };
+}
+
+/**
+ * Read-only lines (economics, last decision, simulation result, command reference) in a
+ * Pi workspace overlay. Esc returns to whoever opened it.
+ */
+export async function openTextView(ui, { title, lines, locale, signal }) {
+  const t = (key, vars) => translate(locale, key, vars);
+  const records = (lines.length ? lines : [t('value.empty')]).map((line, i) => ({
+    id: String(i),
+    label: String(line),
+    fields: {},
+  }));
+  const model = new WorkspaceModel({
+    records,
+    columns: [],
+    title,
+    scope: t('view.scope'),
+    help: t('view.help'),
+    locale,
+  });
+  await openPiWorkspace(ui, model, signal, { reservedKeys: ['ctrl+c'], locale });
 }

@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import install from '../extension.mjs';
 import { fakePi } from '../test-support/fakes.mjs';
-import { fakeTui } from '../test-support/fake-tui.mjs';
+import { attachScreens, waitForScreen, press, view, KEY } from '../test-support/panel.mjs';
 
 const models = [
   { provider: 'fake', id: 'cheap', api: 'test', input: ['text'], reasoning: true, contextWindow: 200000, cost: { input: 0.1, output: 0.1 } },
@@ -115,24 +115,19 @@ test('subagent support recommends independently without changing the parent mode
   assert.match(saved, /cadence: subagent/);
 });
 
-test('Ctrl+S persists the currently configured section in the real menu callback', async (t) => {
+test('Ctrl+S persists the currently configured section in the real panel', async (t) => {
   const { f, dir } = await fixture(t);
-  const tui = fakeTui();
-  f.ctx.ui.custom = (factory) => new Promise((resolve) => {
-    f.screen = factory({ requestRender() {} }, tui.theme, tui.keybindings, resolve);
-  });
-  // runDashboard is host-wired by the extension factory, not by an external TUI.
-  // Supply the fake only for this test; the production entry uses static imports.
-  const { host } = await import('../menu.mjs');
-  host.tui = tui.tuiPkg;
-  host.agent = tui.agentPkg;
-  t.after(() => { host.tui = undefined; host.agent = undefined; });
+  const screens = attachScreens(f.ctx);
   const running = f.command('economist', '');
-  await new Promise((r) => setImmediate(r));
-  await f.screen.handleInput('\u0013');
-  assert.match(await readFile(join(dir, '.pi', 'pi-suite.yaml'), 'utf8'), /enabled: true/);
-  assert.match(f.notifications.join('\n'), /Settings currently saved/);
-  tui.created.settings[0].onCancel();
+  const screen = await waitForScreen(screens);
+  const before = await readFile(join(dir, '.pi', 'pi-suite.yaml'), 'utf8');
+  await press(screen.component, KEY.ctrlS);
+  // Nothing changed, so nothing is rewritten; the panel says where the settings live.
+  assert.equal(await readFile(join(dir, '.pi', 'pi-suite.yaml'), 'utf8'), before);
+  assert.match(before, /enabled: true/);
+  assert.match(view(screen.component, 120), /Settings saved to .*pi-suite\.yaml/);
+  assert.equal(screen.closed, false);
+  await press(screen.component, KEY.esc);
   await running;
 });
 

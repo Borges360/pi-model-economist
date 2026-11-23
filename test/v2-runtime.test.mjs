@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { parseDocument } from 'yaml';
 import install from '../extension.mjs';
 import { fakePi } from '../test-support/fakes.mjs';
-import { fakeTui } from '../test-support/fake-tui.mjs';
+import { attachScreens, waitForScreen, press, choose, view, KEY } from '../test-support/panel.mjs';
 import { host } from '../menu.mjs';
 
 const model = { provider: 'p', id: 'model', name: 'model', api: 'openai-completions', input: ['text'],
@@ -104,20 +104,41 @@ test('preset/advanced changes cannot bypass nested locked floors or executor pol
   await f.command('economist', 'preset economy');
   assert.equal((await saved()).objectives.qualityFloor.simple, 0.99);
 });
-test('new dashboard exposes presets progressively, saves explicitly and cancels drafts', async t => {
-  const tui = fakeTui();
-  const { f, saved } = await open(t, { stage: 'observe', injected: { tui: tui.tuiPkg, agent: tui.agentPkg } });
-  f.ctx.ui.custom = factory => new Promise(resolve => { f.screen = factory({ requestRender() {} }, tui.theme, tui.keybindings, resolve); });
+test('the panel shows a preset with its consequences, saves explicitly and cancels drafts', async t => {
+  const { f, saved } = await open(t, { stage: 'observe' });
+  const screens = attachScreens(f.ctx);
   const running = f.command('economist', '');
-  for (let i = 0; i < 100 && !f.screen; i++) await new Promise(r => setTimeout(r, 5));
-  const settings = tui.created.settings[0]; assert.ok(settings.find('optimization')); assert.equal(settings.find('cadence'), undefined);
-  settings.open('optimization'); await tui.created.select.at(-1).pick('preset:economy');
+  const panel = (await waitForScreen(screens)).component;
+  assert.match(view(panel, 120), /Priority\s+Balanced/);
+  assert.match(view(panel, 120), /When to choose a model\s+prompt/, 'every field is visible: there is no progressive disclosure any more');
+  await choose(panel, 'preset', 'economy');
   assert.equal((await saved()).preset, 'balanced');
-  assert.ok(f.screen.render(80).join('\n').includes('economy'));
-  await f.screen.handleInput('\u0013'); assert.equal((await saved()).preset, 'economy');
-  settings.open('control-settings'); await tui.created.select.at(-1).pick('control:ask');
-  await f.screen.handleInput('\u001b'); await f.screen.handleInput('\u001b'); await running;
+  const draft = view(panel, 120);
+  assert.match(draft, /Priority\s+Economy/);
+  assert.match(draft, /Policy\s+economy/, 'the preset consequence is visible before saving');
+  assert.match(draft, /Priority Economy applied to the draft/);
+  await press(panel, KEY.ctrlS);
+  assert.equal((await saved()).preset, 'economy');
+  assert.equal((await saved()).policy, 'economy');
+  await choose(panel, 'control', 'ask');
+  await press(panel, KEY.esc, KEY.esc); await running;
   assert.equal((await saved()).control, 'automatic');
+});
+test('an explicit edit after a preset wins, and one before it is replaced by the preset', async t => {
+  const { f, saved } = await open(t, { stage: 'observe' });
+  const screens = attachScreens(f.ctx);
+  const running = f.command('economist', '');
+  const panel = (await waitForScreen(screens)).component;
+  await choose(panel, 'cadence', 'session');
+  await choose(panel, 'preset', 'quality');
+  assert.match(view(panel, 120), /When to choose a model\s+prompt/, 'the preset replaced the earlier cadence edit');
+  await choose(panel, 'retrievalBudget', '8192');
+  await press(panel, KEY.ctrlS);
+  const file = await saved();
+  assert.equal(file.preset, 'quality');
+  assert.equal(file.cadence, 'prompt');
+  assert.equal(file.context.retrieval.budgetTokens, 8192, 'the later explicit edit wins over the preset value 4096');
+  await press(panel, KEY.esc); await running;
 });
 test('session switches discard prior context and late request timing, with no parent-model mutation from retrieval', async t => {
   const { f, tools } = await open(t); const before = f.ctx.model;
