@@ -4,7 +4,7 @@ Routes eligible Pi requests to a physical model-and-effort pair using configured
 
 **Manifest:** `pi-model-economist` · **version:** `2.0.0` · **private:** `true`
 **Registry status:** not verified; this checkout does not establish an npm release.
-**Runtime:** Node.js `>=22.19.0`; Pi `1.5.2–1.5.x`. The loader/native TUI smoke targets installed Pi `1.5.2`, with synthetic metadata and no provider calls.
+**Runtime:** Node.js `>=22.19.0`; Pi `1.5.2–1.6.x`. The loader/TUI smoke targets the newest installed Pi release (verified with `1.6.0`), with synthetic metadata and no provider calls.
 
 Version 2.0 adds context planning, recoverable tool artifacts, economic retrieval, incremental structured compaction, measured cache usage and unified cost accounting around the existing ranker. Open `/economist` and choose a preset and control level; advanced settings expose rollout, retrieval, cache-aware switching, cascades, bandit shadow and native Pi workers. Legacy policies map to the corresponding preset (Latency to Custom), retaining advisory/observe control and independent settings without writes. New sessions start at Balanced/advisory/observe. Adaptive activation requires paired measured evidence; no real-world savings are claimed from offline tests. See [the 2.0 architecture and integration guide](docs/v2.md).
 
@@ -30,11 +30,23 @@ Run its local unit suite from the repository with `npm test`. The package previe
 
 ### Commands
 
-The root command opens the dashboard:
+The root command opens the settings panel:
 
 ```text
 /economist
 ```
+
+The panel lists every setting with its current value: language, routing on/off, priority preset, control, context, retrieval budget, privacy, cadence, assessment, policy, effort, pool source, rollout, algorithm, learning and delegation. Opening it reads nothing from disk or network beyond the current configuration.
+
+| Key | In the panel |
+| --- | --- |
+| ↑ / ↓ | Move between rows (the host's own select keys). |
+| Enter | Open a choice list, toggle an on/off row, or open a row's screen. |
+| Ctrl+S | Save the draft; the panel stays open and confirms where it saved. A failed save keeps the draft. |
+| Esc | Leave a choice list without applying it; on a draft, warn first and discard on the second Esc; during a save or an operation, cancel it. |
+| Tab · / | Reach the Save/Help/Close bar · search rows. |
+
+Choosing a priority preset shows its consequences (policy, cadence, effort, context, rollout) in the draft before you save; an explicit edit made after the preset wins. The rows *Candidate pool*, *Session economics*, *Last decision*, *Simulate a request* and *Command-line reference* open their own screen; Esc returns to the panel. The pool and the simulation ask for a saved draft first, because they work on the saved settings; the read-only screens keep your draft.
 
 Useful actions include:
 
@@ -61,13 +73,13 @@ The primary intent maps `design`, `search`, `read` and `explain` to Planner; `te
 
 ### Configuration and state
 
-The extension reads and writes only its `modelEconomist` configuration section. A trusted project can use `.pi/pi-suite.yaml`; the global file is `${PI_SUITE_HOME:-~/.pi/agent/pi-suite}/config.yaml`. Defaults are overridden by global values, project values and then a locked global policy. The `/economist` dashboard defaults to English and offers English or Brazilian Portuguese. The locale is read and saved only as `modelEconomist.locale` in the current trusted project's `.pi/pi-suite.yaml`; it is never inherited from global configuration. Changing language previews the dashboard immediately; Ctrl+S saves the draft, while root Esc warns before discarding it. An untrusted project may preview a language but cannot save that preference.
+The extension reads and writes only its `modelEconomist` configuration section. A trusted project can use `.pi/pi-suite.yaml`; the global file is `${PI_SUITE_HOME:-~/.pi/agent/pi-suite}/config.yaml`. Defaults are overridden by global values, project values and then a locked global policy. The `/economist` panel defaults to English and offers English or Brazilian Portuguese. The locale is read and saved only as `modelEconomist.locale` in the current trusted project's `.pi/pi-suite.yaml`; it is never inherited from global configuration. Changing language previews the panel immediately; Ctrl+S saves the draft, while Esc warns before discarding it. In an untrusted project the language row is shown as locked and nothing is written.
 
 Decision history and measured inputs use local JSON/JSONL storage scoped by the canonical Git root. There is no database. The `yaml` dependency parses configuration.
 
 ### Language
 
-The dashboard is localized in English and Brazilian Portuguese. English is the default and fallback for missing or invalid project locale values. Menu copy previews immediately and remains a draft until Ctrl+S; failed saves keep the draft open. Language preference belongs to the current trusted project and does not leak between projects or sessions.
+The panel is localized in English and Brazilian Portuguese, including its keys, hints and messages. English is the default and fallback for missing or invalid project locale values. Menu copy previews immediately and remains a draft until Ctrl+S; failed saves keep the draft open. Language preference belongs to the current trusted project and does not leak between projects or sessions.
 
 ### Privacy and security
 
@@ -79,11 +91,11 @@ The dashboard is localized in English and Brazilian Portuguese. English is the d
 - Use `/economist candidates list` to check the configured pool and scope.
 - Missing model capability, authentication, health, context, price or budget can make an action infeasible; follow the recovery command in the error instead of relaxing safety limits.
 - `pSuccess` uses verified outcomes and priors. `pSafe` remains unknown until the required risk samples exist. Estimated cost is not an invoice or a savings measurement.
-- The real Pi loader/TUI smoke targets Pi CLI `1.5.2` with synthetic model metadata; provider integrations and human terminal resizing are separate validation.
+- The real Pi loader/TUI smoke (`npm run test:host`) renders the panel at 40/80/120 columns with synthetic model metadata; provider integrations, a physical terminal (resizing, fonts) and human review are separate validation.
 
 ### License
 
-The product manifest does not declare a software license, and no product license is asserted here. The bundled INTEIRO mark has a separate MIT notice in [its attribution file](docs/assets/INTEIRO-MARK-LICENSE.txt).
+The product manifest does not declare a software license, and no product license is asserted here. Third-party code under `vendor/` keeps its own license and provenance; see [vendor/THIRD_PARTY_NOTICES.md](vendor/THIRD_PARTY_NOTICES.md).
 
 ## Português (Brasil)
 
@@ -105,11 +117,23 @@ Execute a suíte local com `npm test` na raiz do repositório. A prévia deste p
 
 ### Comandos
 
-O comando raiz abre o painel:
+O comando raiz abre o painel de configurações:
 
 ```text
 /economist
 ```
+
+O painel lista cada configuração com o valor atual: idioma, roteamento ligado/desligado, preset de prioridade, controle, contexto, orçamento de retrieval, privacidade, cadência, avaliação, política, esforço, fonte do pool, rollout, algoritmo, aprendizado e delegação. Abrir o painel não lê disco nem rede além da configuração atual.
+
+| Tecla | No painel |
+| --- | --- |
+| ↑ / ↓ | Move entre as linhas (as teclas de seleção do próprio host). |
+| Enter | Abre a lista de opções, alterna uma linha ligado/desligado ou abre a tela da linha. |
+| Ctrl+S | Salva o rascunho; o painel continua aberto e confirma onde salvou. Uma falha mantém o rascunho. |
+| Esc | Sai da lista sem aplicar; com rascunho, avisa e descarta no segundo Esc; durante um salvamento ou operação, cancela. |
+| Tab · / | Chega à barra Salvar/Ajuda/Fechar · busca linhas. |
+
+Escolher um preset de prioridade mostra as consequências (política, cadência, esforço, contexto, rollout) no rascunho antes de salvar; uma edição explícita feita depois do preset prevalece. As linhas *Pool de candidatos*, *Economia da sessão*, *Última decisão*, *Simular um pedido* e *Referência de comandos* abrem a própria tela; Esc volta ao painel. O pool e a simulação pedem o rascunho salvo antes, porque trabalham com a configuração salva; as telas somente leitura preservam o rascunho.
 
 | Comando | Finalidade |
 | --- | --- |
@@ -134,13 +158,13 @@ A intenção principal mapeia `design`, `search`, `read` e `explain` para Planej
 
 ### Configuração e estado
 
-A extensão lê e grava somente a seção `modelEconomist`. Um projeto confiável pode usar `.pi/pi-suite.yaml`; o arquivo global fica em `${PI_SUITE_HOME:-~/.pi/agent/pi-suite}/config.yaml`. Defaults recebem overrides global, de projeto e, por último, uma política global bloqueada. O painel `/economist` abre em inglês e oferece inglês ou português brasileiro. O idioma é lido e salvo somente como `modelEconomist.locale` no `.pi/pi-suite.yaml` do projeto confiável atual; ele nunca vem da configuração global. A troca pré-visualiza o painel imediatamente; Ctrl+S salva o rascunho e Esc na raiz avisa antes de descartá-lo. Um projeto não confiável pode pré-visualizar o idioma, mas não salvar essa preferência.
+A extensão lê e grava somente a seção `modelEconomist`. Um projeto confiável pode usar `.pi/pi-suite.yaml`; o arquivo global fica em `${PI_SUITE_HOME:-~/.pi/agent/pi-suite}/config.yaml`. Defaults recebem overrides global, de projeto e, por último, uma política global bloqueada. O painel `/economist` abre em inglês e oferece inglês ou português brasileiro. O idioma é lido e salvo somente como `modelEconomist.locale` no `.pi/pi-suite.yaml` do projeto confiável atual; ele nunca vem da configuração global. A troca pré-visualiza o painel imediatamente; Ctrl+S salva o rascunho e Esc avisa antes de descartá-lo. Em um projeto não confiável a linha de idioma aparece bloqueada e nada é gravado.
 
 Histórico de decisões e entradas medidas ficam em JSON/JSONL local, isolado pela raiz Git canônica. Não há banco de dados. A dependência `yaml` lê a configuração.
 
 ### Idioma
 
-O painel tem textos em inglês e português brasileiro. Inglês é o padrão e o fallback para idioma de projeto ausente ou inválido. A prévia do menu é imediata e fica em rascunho até Ctrl+S; uma falha ao salvar mantém o rascunho aberto. A preferência pertence ao projeto confiável atual e não vaza entre projetos ou sessões.
+O painel tem textos em inglês e português brasileiro, inclusive teclas, dicas e mensagens. Inglês é o padrão e o fallback para idioma de projeto ausente ou inválido. A prévia do menu é imediata e fica em rascunho até Ctrl+S; uma falha ao salvar mantém o rascunho aberto. A preferência pertence ao projeto confiável atual e não vaza entre projetos ou sessões.
 
 ### Privacidade e segurança
 
@@ -152,8 +176,8 @@ O painel tem textos em inglês e português brasileiro. Inglês é o padrão e o
 - Use `/economist candidates list` para conferir pool e escopo.
 - Falta de capacidade, autenticação, saúde, janela de contexto, preço ou orçamento pode tornar uma ação inviável; siga a recuperação indicada em vez de relaxar limites de segurança.
 - `pSuccess` usa resultados verificados e priors. `pSafe` permanece desconhecido até existir a amostra de risco exigida. Custo estimado não é fatura nem medição de economia.
-- O smoke do carregador e do painel reais usa Pi CLI `1.5.2`, com metadados sintéticos; provedores reais e redimensionamento físico exigem validação própria.
+- O smoke do carregador e do painel reais (`npm run test:host`) renderiza o painel em 40/80/120 colunas, com metadados sintéticos; provedores reais, um terminal físico (redimensionamento, fontes) e a revisão humana exigem validação própria.
 
 ### Licença
 
-O manifesto não declara licença de software para o produto; este README não afirma uma. A marca INTEIRO incluída tem aviso MIT separado em [seu arquivo de atribuição](docs/assets/INTEIRO-MARK-LICENSE.txt).
+O manifesto não declara licença de software para o produto; este README não afirma uma. O código de terceiros em `vendor/` mantém licença e procedência próprias; veja [vendor/THIRD_PARTY_NOTICES.md](vendor/THIRD_PARTY_NOTICES.md).

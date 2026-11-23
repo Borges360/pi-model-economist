@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- `/economist` opens a settings panel built on a vendored copy of a terminal panel adapter (`vendor/inteiro-terminal/`, plain ESM, `"patches": []`, provenance and licence in `vendor/THIRD_PARTY_NOTICES.md`, integrity checked by `test/vendor.test.mjs` without the source checkout). It paints only with the Pi host theme.
+- Every setting is a row with its current value: language, routing, priority preset, control, context, retrieval budget, the three privacy policies, cadence, assessment, policy, effort, ceiling, fixed effort, pool source, rollout, algorithm, learning and delegation. Choosing a preset shows its consequences in the draft before Ctrl+S; an explicit edit after it wins.
+- Keys follow the Pi extension standard: ↑/↓ and Enter use the host bindings, Ctrl+S saves and keeps the panel open, Esc leaves a list without applying it, Esc on a draft warns and the second Esc discards, Esc during a save cancels it (a late write is reconciled from storage with Ctrl+S).
+- Candidate pool, session economics, last decision, simulation and the command reference are rows that open their own screen and return to the panel. The pool and the simulation ask for a saved draft first; the read-only screens keep the draft.
+- English by default with a Portuguese (Brazil) selector that previews every panel text, including keys, hints and errors; the text fallback without a TUI follows the same language instead of being fixed in Portuguese.
+- An untrusted project shows the language row as locked; global locks show as `[locked: global policy]` on their rows instead of hiding them.
+- Enabling routing with an empty pool states in the panel which models Ctrl+S will add; the separate confirmation dialog inside the save is gone.
+- Tests drive the real panel by key bytes with the pi-tui 1.6.0 keybindings (new devDependency `@earendil-works/pi-tui@1.6.0`); `npm run test:host` loads an isolated copy without `node_modules/pi-tui` through the installed Pi loader and renders every screen at 40/80/120 columns.
+
 ## 2.0.0 — 2026-11-18
 
 - Distinguish cache-hit call frequency from cached-token fraction, expose missing usage coverage, and deduplicate replayed tool-output accounting.

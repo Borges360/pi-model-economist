@@ -66,3 +66,7 @@ test('package ships the vendored adapter and pins the host range it was verified
   assert.match(notice, /"patches": \[\]/);
 });
 
+test('consumer README does not advertise the design system or its mark', async () => {
+  const readme = await readFile(new URL('README.md', root), 'utf8');
+  assert.doesNotMatch(readme, /inteiro/i);
+});
