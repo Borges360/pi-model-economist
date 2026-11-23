@@ -16,9 +16,12 @@
 
 import { localeName, normalizeLocale, translate } from './lib/i18n.mjs';
 import { causalExplain } from './lib/v2-ui.mjs';
-import { openPiSettings, openPiWorkspace } from './vendor/inteiro-terminal/pi.js';
+import { matchesKey, truncateToWidth, visibleWidth } from '@earendil-works/pi-tui';
+import { resolveMessages } from './vendor/inteiro-terminal/i18n.js';
+import { keyAction, standardKeyHints } from './vendor/inteiro-terminal/keyboard.js';
+import { openPiSettings, piBindings } from './vendor/inteiro-terminal/pi.js';
 import { SettingsSession } from './vendor/inteiro-terminal/settings.js';
-import { WorkspaceModel } from './vendor/inteiro-terminal/workspace.js';
+import { wrap } from './vendor/inteiro-terminal/text.js';
 
 export { openPiSettings, SettingsSession };
 
@@ -182,7 +185,8 @@ export function provideHost(tui, agent) {
 /**
  * The host surface the panel depends on. The vendored adapter imports `Input`,
  * `matchesKey`, `truncateToWidth` and `visibleWidth` from pi-tui
- * (`vendor/inteiro-terminal/pi.js:2`); `runOperation` draws with pi-tui `Text`. Nothing
+ * (`vendor/inteiro-terminal/pi.js:2`), the read-only view below uses the last three, and
+ * `runOperation` draws with pi-tui `Text`. Nothing
  * from pi-coding-agent is needed any more: the panel paints with the theme that
  * `ctx.ui.custom` hands over. The smoke script asserts this table against the installed host.
  */
@@ -422,23 +426,130 @@ export function simulationScreen(locale, { run }) {
 }
 
 /**
+ * Greedy wrap that breaks at spaces and after `|` (so `economy|balanced|quality` breaks
+ * between choices, not inside one); only a piece wider than its line is split by grapheme.
+ * The first line holds `first` cells, every later line `rest`.
+ */
+function wrapWords(text, first, rest) {
+  const lines = [];
+  const room = () => (lines.length ? rest : first);
+  let line = '';
+  let gap = '';
+  for (const token of text.match(/ +|[^ |]*\|+|[^ |]+/g) ?? []) {
+    if (token.startsWith(' ')) {
+      if (line) gap = token;
+      continue;
+    }
+    if (visibleWidth(line + gap + token) <= room()) line += gap + token;
+    else {
+      if (line) lines.push(line);
+      line = token;
+      while (visibleWidth(line) > room()) {
+        const [piece] = wrap(line, room());
+        if (!piece || piece === '?') {
+          // A single grapheme wider than the line: drop it rather than loop.
+          line = [...line].slice(1).join('');
+          continue;
+        }
+        lines.push(piece);
+        line = line.slice(piece.length);
+      }
+    }
+    gap = '';
+  }
+  return [...lines, line];
+}
+
+/**
+ * Wrap one line of a read-only view to `width` cells. Continuation lines keep the line's
+ * own indentation plus two cells, so a wrapped description never restarts at column 0.
+ */
+export function wrapLine(line, width) {
+  const text = String(line);
+  const limit = Math.max(0, Math.floor(width / 2) - 2);
+  const indent = Math.min(text.length - text.trimStart().length, limit);
+  const hang = Math.min(indent + 2, limit);
+  return wrapWords(text.trimStart(), Math.max(1, width - indent), Math.max(1, width - hang))
+    .map((piece, i) => ' '.repeat(i ? hang : indent) + piece);
+}
+
+const MIN_COLUMNS = 40;
+const MIN_ROWS = 12;
+
+/**
  * Read-only lines (economics, last decision, simulation result, command reference) in a
- * Pi workspace overlay. Esc returns to whoever opened it.
+ * temporary overlay. The text is word-wrapped to the width Pi asks for and scrolls with
+ * the host's ↑/↓ and PgUp/PgDn bindings; Esc returns to whoever opened it. There is
+ * nothing to select, sort or save here, so the view offers no actions besides closing.
+ * It paints only with the host theme.
  */
 export async function openTextView(ui, { title, lines, locale, signal }) {
+  if (signal?.aborted) return;
   const t = (key, vars) => translate(locale, key, vars);
-  const records = (lines.length ? lines : [t('value.empty')]).map((line, i) => ({
-    id: String(i),
-    label: String(line),
-    fields: {},
-  }));
-  const model = new WorkspaceModel({
-    records,
-    columns: [],
-    title,
-    scope: t('view.scope'),
-    help: t('view.help'),
-    locale,
-  });
-  await openPiWorkspace(ui, model, signal, { reservedKeys: ['ctrl+c'], locale });
+  const m = resolveMessages(locale);
+  const source = lines.length ? lines.map(String) : [t('value.empty')];
+  let dispose;
+  try {
+    await ui.custom((tui, theme, keys, done) => {
+      let closed = false;
+      let top = 0;
+      let page = 1;
+      let total = 0;
+      const bindings = piBindings(keys, ['ctrl+c'], false, { locale });
+      const hints = standardKeyHints(bindings, [['navigate', m.hintScroll], ['back', m.hintClose]]);
+      const close = () => {
+        if (closed) return;
+        closed = true;
+        signal?.removeEventListener('abort', close);
+        done();
+      };
+      signal?.addEventListener('abort', close, { once: true });
+      dispose = close;
+      const fit = (line, width) => (visibleWidth(line) > width ? truncateToWidth(line, width, '') : line);
+      const bold = (line) => (theme.bold ? theme.bold(line) : line);
+      const muted = (line) => theme.fg('muted', line);
+      return {
+        focused: true,
+        invalidate() {},
+        dispose: close,
+        render(columns) {
+          const width = Math.max(1, Math.floor(columns));
+          const rows = Math.max(1, Math.floor(tui.terminal?.rows ?? 24));
+          const wrapped = (text) => wrap(text, width, 'word');
+          if (width < MIN_COLUMNS || rows < MIN_ROWS)
+            return [
+              ...wrapped(title).map(bold),
+              ...wrapped(m.terminalTooSmall(width, rows, MIN_COLUMNS, MIN_ROWS)).map((l) => theme.fg('warning', l)),
+              ...wrapped(m.enlargeOrGoBack).map(muted),
+            ].slice(0, rows).map((l) => fit(l, width));
+          const body = source.flatMap((line) => wrapLine(line, width));
+          const header = [bold(truncateToWidth(title, width, '…')), muted(truncateToWidth(t('view.scope'), width, '…'))];
+          const footer = [...wrapped(t('view.help')), ...wrapped(hints)].map(muted);
+          page = Math.max(1, rows - header.length - footer.length - 2);
+          total = body.length;
+          top = Math.max(0, Math.min(top, total - page));
+          const shown = body.slice(top, top + page);
+          const position = muted(m.linesRange(Math.min(top + 1, total), Math.min(top + page, total), total));
+          return [...header, '', ...shown, position, ...footer].slice(0, rows).map((l) => fit(l, width));
+        },
+        handleInput(data) {
+          if (closed || matchesKey(data, 'ctrl+c')) return;
+          const binding = bindings.find((b) => matchesKey(data, b.key));
+          const action = binding && keyAction(binding.key, bindings, 'navigation');
+          if (action === 'back') return close();
+          const last = Math.max(0, total - page);
+          if (action === 'navigate.up') top -= 1;
+          else if (action === 'navigate.down') top += 1;
+          else if (action === 'navigate.pageUp') top -= page;
+          else if (action === 'navigate.pageDown') top += page;
+          else if (action === 'navigate.first') top = 0;
+          else if (action === 'navigate.last') top = last;
+          top = Math.max(0, Math.min(top, last));
+          tui.requestRender?.();
+        },
+      };
+    }, { overlay: true, overlayOptions: { width: '100%', maxHeight: '100%', anchor: 'center' } });
+  } finally {
+    dispose?.();
+  }
 }

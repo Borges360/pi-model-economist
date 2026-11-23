@@ -5,8 +5,8 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
   candidateDescription,
+  commandReference,
   loadProjectLocale,
-  localizedHelpLines,
   localeName,
   normalizeLocale,
   translate,
@@ -38,14 +38,30 @@ test('locale normalization, candidate copy, and command help use complete transl
   assert.equal(localeName('missing'), 'English');
   assert.match(candidateDescription({ tier: 2, tools: true, live: true, inScope: true }, 'en'), /tier 2 · tools/);
   assert.match(candidateDescription({ tier: 2, tools: false, live: false, inScope: false }, 'pt-BR'), /tier 2 · sem ferramentas · não autenticado/);
-  const help = localizedHelpLines('en', [
-    '/economist — Roteie cada pedido',
-    '/economist on — ativa o roteamento',
-    '/economist simulate TEXT — simulação',
+  // Spec descriptions are ignored: each language reads only its own catalog.
+  const spec = {
+    actions: {
+      on: { hint: '', description: 'ativa o roteamento' },
+      setup: { hint: '[--global]', description: 'configuração', flags: { '--global': { hint: 'grava no global' } } },
+      simulate: { hint: 'TEXT', description: 'simulação' },
+      unknown: { hint: '', description: 'sem chave' },
+    },
+  };
+  const english = commandReference('en', 'economist', spec);
+  assert.deepEqual(english, [
+    '/economist — Route each request to a capable model using risk, quality, cost and latency.',
+    '/economist on',
+    '    enable routing and switch to economist/auto',
+    '/economist setup [--global]',
+    '    guided setup from authenticated models',
+    '    --global: write the global config instead',
+    '/economist simulate TEXT',
+    '    free dry run; no model is called',
+    '/economist unknown',
   ]);
-  assert.match(help[0], /Route each request/);
-  assert.match(help[1], /enable routing/);
-  assert.match(help[2], /free dry run/);
+  const portuguese = commandReference('pt-BR', 'economist', spec);
+  assert.match(portuguese[2], /ativa o roteamento e troca para economist\/auto/);
+  assert.match(portuguese[5], /--global: grava no arquivo global/);
 });
 
 test('project locale reads only for a trusted project and falls back safely', async (t) => {

@@ -80,7 +80,7 @@ import {
   candidateDescription,
   localeName,
   loadProjectLocale,
-  localizedHelpLines,
+  commandReference,
   normalizeLocale,
   translate,
 } from './lib/i18n.mjs';
@@ -1655,8 +1655,8 @@ export default function economist(pi, injected = {}) {
       },
       cadence: {
         hint: 'session|prompt|subagent',
-        description: 'quando reavaliar modelo e esforço',
-        args: [{ values: CADENCES, hint: 'cadência' }],
+        description: 'when to re-evaluate model and effort',
+        args: [{ values: CADENCES, hint: 'cadence' }],
       },
       mode: {
         hint: 'MODE',
@@ -1690,12 +1690,12 @@ export default function economist(pi, injected = {}) {
       },
       classifier: {
         hint: 'on|off',
-        description: 'usar um classificador adicional para tarefas ambíguas',
+        description: 'use an additional classifier for ambiguous tasks',
         args: [
           {
             values: [
               { value: 'on', description: 'classify ambiguous requests' },
-              { value: 'off', description: 'somente regras, sem custo extra de classificação' },
+              { value: 'off', description: 'rules only, no extra classification cost' },
             ],
             hint: 'on|off',
           },
@@ -1996,7 +1996,7 @@ export default function economist(pi, injected = {}) {
     const fields = (l) => economistFields(l, { enums, values: base, locks: locksFor(l) });
     const overrides = (l) => ({ saved: translate(l, 'panel.saved', { path: rt.configFile }) });
     const scopeLine = (l) => translate(l, 'panel.scope', {
-      enabled: saved.enabled ? 'on' : 'off',
+      enabled: translate(l, saved.enabled ? 'value.on' : 'value.off'),
       mode: saved.mode,
       policy: saved.policy,
       pool: candidates(ctx).length,
@@ -2035,7 +2035,7 @@ export default function economist(pi, injected = {}) {
       ...extra,
     });
     const display = (field, value) => {
-      if (field.kind === 'boolean') return value ? 'on' : 'off';
+      if (field.kind === 'boolean') return t(value ? 'value.on' : 'value.off');
       return field.choices?.find((c) => c.id === value)?.label ?? String(value);
     };
     const record = (fieldList, values, from) => {
@@ -2244,7 +2244,7 @@ export default function economist(pi, injected = {}) {
           ...economicsLines(report, economics.capabilities.capabilities, locale, { stage: saved.rollout.stage, rollback: economics.rollback }),
         ]);
       } else if (result.action === 'explain') await view(t('panel.explain'), explainLines(last, saved, { locale }));
-      else if (result.action === 'help') await view(t('panel.help'), localizedHelpLines(locale, usageText('economist', economistSpec).split('\n')));
+      else if (result.action === 'help') await view(t('panel.help'), commandReference(locale, 'economist', economistSpec));
       else break;
     }
     // A panel closed by a session switch or shutdown reports nothing into the next session.

@@ -198,6 +198,11 @@ test('the pi entry point imports the host modules statically and hands them to t
   // The vendored adapter imports pi-tui statically too, and the panel module imports the
   // adapter statically: no dynamic import of a host module anywhere on the panel path.
   const menu = await readFile(new URL('../menu.mjs', import.meta.url), 'utf8');
-  assert.match(menu, /^import \{ openPiSettings, openPiWorkspace \} from '\.\/vendor\/inteiro-terminal\/pi\.js';$/m);
+  assert.match(menu, /^import \{ openPiSettings, piBindings \} from '\.\/vendor\/inteiro-terminal\/pi\.js';$/m);
+  // The read-only view imports pi-tui statically as well, and only names pinned above.
+  const own = menu.match(/^import \{([^}]*)\} from '@earendil-works\/pi-tui';$/m)?.[1]
+    .split(',').map((s) => s.trim()).filter(Boolean) ?? [];
+  assert.ok(own.length, 'menu.mjs imports pi-tui statically');
+  for (const name of own) assert.ok(HOST_EXPORTS['@earendil-works/pi-tui'].includes(name), `${name} is pinned in HOST_EXPORTS`);
   assert.doesNotMatch(menu, /^(?!\s*(\*|\/\/)).*\bimport\(\s*['"]@earendil-works/m, 'no dynamic host import outside comments');
 });

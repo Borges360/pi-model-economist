@@ -9,6 +9,7 @@ import { mkdtemp, rm, mkdir, writeFile, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { parseDocument } from 'yaml';
+import { translationCatalogs } from '../lib/i18n.mjs';
 import install from '../extension.mjs';
 import { host, openPiSettings, simulationScreen } from '../menu.mjs';
 import { fakePi } from '../test-support/fakes.mjs';
@@ -62,7 +63,7 @@ const saved = async (dir) =>
   parseDocument(await readFile(join(dir, '.pi', 'pi-suite.yaml'), 'utf8')).toJS();
 const poolIds = (c) => c.candidates.map((x) => (typeof x === 'string' ? x : x.id)).sort();
 /** Words that only exist in the Portuguese catalogs (product and adapter). */
-const PORTUGUESE = /ção|ções|ões|Idioma|Roteamento|ligado|desligado|Salvar|Fechar|Ajuda|Alterações|Buscar|navegar|Prioridade|Pedido/;
+const PORTUGUESE = /ção|ções|ões|Idioma|Roteamento|ligado|desligado|Salvar|Fechar|Ajuda|Alterações|Buscar|navegar|Prioridade|Pedido|quando|esforço|classificador|indisponível|desconhecido/;
 
 test('the panel stages changes until Ctrl+S and stays open after saving', async (t) => {
   const { dir, f, screens } = await open(t);
@@ -488,6 +489,93 @@ test('a draft survives a trip to the read-only views', async (t) => {
   assert.equal((await saved(dir)).modelEconomist.mode, 'rules');
   assert.equal((await saved(dir)).modelEconomist.locale, 'pt-BR');
   await press(screens.component, KEY.esc);
+  await running;
+});
+
+/** Words that only exist in the English catalogs (product views and adapter). */
+const ENGLISH = /\b(enable routing|switch to|stop routing|trade-off|whether effort|choose|show this|unknown|quality floor|safety floor|Decision causes|model \+ effort|reason|read-only|returns to|scroll|close|lines|Actual|verified|Context|Latency|Cost error|observed|available)\b/;
+
+/** Open one read-only row of the panel and return its screen, in a tall terminal by default. */
+const openView = async (screens, panel, id) => {
+  const index = screens.screens.length;
+  await focus(panel, id);
+  await press(panel, KEY.enter);
+  return (await waitForScreen(screens, index + 1)).component;
+};
+
+for (const [locale, foreign, own] of [['en', PORTUGUESE, /read-only/], ['pt-BR', ENGLISH, /somente leitura/]])
+  test(`help, economics and last-decision views speak only ${locale}`, async (t) => {
+    const { f, screens } = await open(
+      t,
+      `modelEconomist:\n  locale: ${locale}\n  mode: rules\n  enabled: true\n  candidates:\n    - id: openrouter/cheap/model\n      tier: 1\n      tools: true\n`,
+      POOL,
+      { rows: 400 },
+    );
+    await f.pi.virtual.route({ reason: 'user', messages: [{ role: 'user', content: 'olá' }], thinkingLevel: 'off' }, f.ctx);
+    const running = f.command('economist', '');
+    const main = (await waitForScreen(screens)).component;
+    const scope = view(main, 120).split('\n')[1];
+    assert.match(scope, locale === 'en' ? /^routing on · / : /^roteamento ligado · /, 'the scope line names the routing state in the panel language');
+    for (const id of ['help', 'economics', 'explain']) {
+      const screen = await openView(screens, screens.component, id);
+      for (const width of [40, 80, 120]) {
+        const text = view(screen, width);
+        assert.match(text, own, `${id} is a ${locale} view`);
+        assert.doesNotMatch(text, foreign, `${id} at ${width} columns has no text in the other language`);
+      }
+      const count = screens.screens.length;
+      await press(screen, KEY.esc);
+      await waitForScreen(screens, count + 1);
+    }
+    await press(screens.component, KEY.esc);
+    await running;
+  });
+
+test('the command reference describes every action in the panel language', async (t) => {
+  for (const locale of ['en', 'pt-BR']) {
+    const { f, screens } = await open(t, `modelEconomist:\n  locale: ${locale}\n`, POOL, { rows: 400 });
+    const running = f.command('economist', '');
+    const main = (await waitForScreen(screens)).component;
+    const help = await openView(screens, main, 'help');
+    const lines = view(help, 200).split('\n');
+    const actions = lines.map((line) => line.match(/^\/economist ([a-z-]+)/)?.[1]).filter(Boolean);
+    assert.ok(actions.length >= 25, `${locale}: every action is listed`);
+    for (const action of actions)
+      assert.ok(Object.hasOwn(translationCatalogs()[locale], `help.${action}`), `${locale}: help.${action} is translated`);
+    for (const [i, line] of lines.entries())
+      if (/^\/economist [a-z-]+/.test(line)) assert.match(lines[i + 1], /^ {4}\S/, `${locale}: "${line}" is followed by its description`);
+    await press(help, KEY.esc);
+    await press((await waitForScreen(screens, 3)).component, KEY.esc);
+    await running;
+  }
+});
+
+test('read-only views wrap whole words under their indentation and offer only scrolling and Esc', async (t) => {
+  const { f, screens } = await open(t, 'modelEconomist:\n  locale: pt-BR\n', POOL, { rows: 30 });
+  const running = f.command('economist', '');
+  const main = (await waitForScreen(screens)).component;
+  const help = await openView(screens, main, 'help');
+  for (const width of [40, 80, 120]) {
+    const text = view(help, width);
+    assert.doesNotMatch(text, /Tabela|Ordenar|Pausar logs|\[Resultados\]/, 'no table/log actions on a text view');
+    const body = text.split('\n').slice(3, -3);
+    for (const line of body.slice(1)) assert.match(line, /^(\/economist |\s)/, `${width}: a wrapped line never restarts at column 0: ${JSON.stringify(line)}`);
+  }
+  assert.match(view(help, 120), /^\/economist on\n {4}ativa o roteamento e troca para economist\/auto$/m, 'at 120 columns a description is shown whole');
+  assert.match(view(help, 40), /^\/economist preset economy\|balanced\|\n {2}quality\|adaptive\|custom$/m, 'choices break after a bar, not inside a word');
+  const first = view(help, 80);
+  assert.match(first, /^1-\d+ de \d+ linhas$/m);
+  await press(help, KEY.down, KEY.down);
+  assert.match(view(help, 80), /^3-\d+ de \d+ linhas$/m, '↓ scrolls the text');
+  await press(help, KEY.esc);
+  const back = (await waitForScreen(screens, 3)).component;
+
+  const economics = await openView(screens, back, 'economics');
+  const narrow = view(economics, 40);
+  assert.doesNotMatch(narrow, /indisponíve\n|indisponív\n/, 'words are not cut at 40 columns');
+  assert.match(narrow, /Fração de tokens em cache: indisponível\n {2}· chamadas observadas 0 · chamadas sem\n {2}medição 0/);
+  await press(economics, KEY.esc);
+  await press((await waitForScreen(screens, 5)).component, KEY.esc);
   await running;
 });
 
