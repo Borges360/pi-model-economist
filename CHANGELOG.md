@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Open source
+
+- Added `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, issue and pull request templates, and `SECURITY.md` with private vulnerability reporting.
+- README reorganized with the same sections in English and Brazilian Portuguese.
+- The project is now licensed under MIT (`LICENSE`); `package.json` declares `license`, `repository`, `bugs` and `homepage`.
+
 - `/economist` opens a settings panel built on a vendored copy of a terminal panel adapter (`vendor/inteiro-terminal/`, plain ESM, `"patches": []`, provenance and licence in `vendor/THIRD_PARTY_NOTICES.md`, integrity checked by `test/vendor.test.mjs` without the source checkout). It paints only with the Pi host theme.
 - Every setting is a row with its current value: language, routing, priority preset, control, context, retrieval budget, the three privacy policies, cadence, assessment, policy, effort, ceiling, fixed effort, pool source, rollout, algorithm, learning and delegation. Choosing a preset shows its consequences in the draft before Ctrl+S; an explicit edit after it wins.
 - Keys follow the Pi extension standard: ↑/↓ and Enter use the host bindings, Ctrl+S saves and keeps the panel open, Esc leaves a list without applying it, Esc on a draft warns and the second Esc discards, Esc during a save cancels it: an Esc that lands before the write (also while the model switch is still pending) writes nothing and restores the previous model; only when the outcome stays unconfirmed does Ctrl+S check storage before saving again.
