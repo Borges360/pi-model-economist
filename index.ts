@@ -4,6 +4,7 @@ import * as piAgent from '@earendil-works/pi-coding-agent';
 import { Type } from '@earendil-works/pi-ai';
 import { Agent } from '@earendil-works/pi-agent-core';
 import install from './extension.mjs';
+import { registerInteiroPiThemes } from './vendor/inteiro-terminal/pi.js';
 
 /**
  * The settings panel (vendored adapter in `vendor/inteiro-terminal/`) and the offline
@@ -25,5 +26,7 @@ import install from './extension.mjs';
  * tested modules still holds.
  */
 export default function (pi: ExtensionAPI) {
+  // Makes the design-system Pi themes available in /settings: no separate install, never selects one.
+  registerInteiroPiThemes(pi);
   install(pi, { tui: piTui, agent: piAgent, Agent, Type });
 }

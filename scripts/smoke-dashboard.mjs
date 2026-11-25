@@ -24,6 +24,8 @@ import { pathToFileURL } from 'node:url';
 import { piExtensions } from './pi-module.mjs';
 import { fakePi } from '../test-support/fakes.mjs';
 
+// The extension installs its themes into the agent dir; a smoke never writes to the real ~/.pi.
+process.env.PI_DESIGN_THEMES ??= 'off';
 const UP = '\x1b[A';
 const DOWN = '\x1b[B';
 const ENTER = '\r';

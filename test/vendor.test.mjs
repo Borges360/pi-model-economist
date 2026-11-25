@@ -48,7 +48,11 @@ test('vendored copy carries no design-system tokens, palette or fixed colors', a
     assert.doesNotMatch(source, /color\.identity|SEMANTIC_ROLES/, `${file} imports tokens`);
     for (const [, specifier] of source.matchAll(/from "([^"]+)"/g))
       assert.ok(
-        specifier.startsWith('./') ? specifier.endsWith('.js') : specifier === '@earendil-works/pi-tui',
+        // Node built-ins appear only in the theme installer (pi-theme-install.js).
+        specifier.startsWith('./')
+          ? specifier.endsWith('.js')
+          : specifier === '@earendil-works/pi-tui' ||
+            (file === 'pi-theme-install.js' && specifier.startsWith('node:')),
         `${file} imports ${specifier}`,
       );
   }

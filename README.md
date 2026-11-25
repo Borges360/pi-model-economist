@@ -108,6 +108,8 @@ The extension reads and writes only its `modelEconomist` configuration section. 
 
 Decision history and measured inputs use local JSON/JSONL storage scoped by the canonical Git root. There is no database. The `yaml` dependency parses configuration.
 
+Themes: on load, the extension copies the color themes of its terminal adapter to `<agent-dir>/themes/`, so they are listed in `/settings` → **Theme**. It never changes the selected theme and never overwrites a theme file you edited. Set `PI_DESIGN_THEMES=off` to skip the copy.
+
 ### Language
 
 The panel is localized in English and Brazilian Portuguese, including its keys, hints and messages. English is the default and the fallback for a missing or invalid project locale. The locale is read and saved only as `modelEconomist.locale` in the current trusted project's `.pi/pi-suite.yaml`; it is never inherited from global configuration, so it does not leak between projects or sessions.
@@ -237,6 +239,8 @@ A intenção principal mapeia `design`, `search`, `read` e `explain` para Planej
 A extensão lê e grava somente a seção `modelEconomist`. Um projeto confiável pode usar `.pi/pi-suite.yaml`; o arquivo global fica em `${PI_SUITE_HOME:-~/.pi/agent/pi-suite}/config.yaml`. Os defaults são sobrepostos pelos valores globais, depois pelos do projeto e, por último, por uma política global bloqueada. Há um exemplo de configuração em [examples/pi-suite.yaml](examples/pi-suite.yaml).
 
 Histórico de decisões e entradas medidas ficam em JSON/JSONL local, isolado pela raiz Git canônica. Não há banco de dados. A dependência `yaml` lê a configuração.
+
+Temas: ao carregar, a extensão copia os temas de cores do seu adaptador de terminal para `<agent-dir>/themes/`, e eles aparecem em `/settings` → **Theme**. Ela nunca troca o tema escolhido nem sobrescreve um arquivo de tema que você editou. Defina `PI_DESIGN_THEMES=off` para não copiar.
 
 ### Idioma
 

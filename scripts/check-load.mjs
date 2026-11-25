@@ -8,6 +8,8 @@
  */
 import { piExtensions } from './pi-module.mjs';
 
+// The extension installs its themes into the agent dir; a smoke never writes to the real ~/.pi.
+process.env.PI_DESIGN_THEMES ??= 'off';
 const { loadExtensions, createExtensionRuntime } = await piExtensions();
 const targets = process.argv.slice(2);
 if (!targets.length) throw Error('usage: check-load.mjs <extension-dir> ...');
