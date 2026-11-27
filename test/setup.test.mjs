@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { mkdtemp, rm, readFile, mkdir } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseDocument } from 'yaml';
@@ -185,12 +185,25 @@ test('settings persist and a bare or unknown invocation teaches the grammar', as
   await f.command('economist', '');
   const bare = f.notifications.at(-1);
   // A bare call must read as a status panel, not as a command dump: state first,
-  // then the direct commands for clients with no custom TUI screen.
-  assert.match(bare, /Economist · ON · cadência prompt · avaliação rules/);
-  assert.match(bare, /esforço auto \(teto high/);
-  assert.match(bare, /pool \d+ modelo\(s\)/);
+  // then the direct commands for clients with no custom TUI screen. English is the
+  // default screen language (the text fallback used to be fixed in Portuguese).
+  assert.match(bare, /Economist · ON · cadence prompt · assessment rules/);
+  assert.match(bare, /effort auto \(ceiling high/);
+  assert.match(bare, /pool \d+ model\(s\)/);
   assert.match(bare, /\/economist candidates list/);
   assert.doesNotMatch(bare, /Unknown \/economist/);
+  assert.doesNotMatch(bare, /cadência|avaliação|esforço|modelo\(s\)/, 'no Portuguese in the English fallback');
+
+  // The trusted project's language choice also applies to the text fallback.
+  const file = join(dir, '.pi', 'pi-suite.yaml');
+  const doc = parseDocument(await readFile(file, 'utf8'));
+  doc.setIn(['modelEconomist', 'locale'], 'pt-BR');
+  await writeFile(file, String(doc));
+  await f.command('economist', '');
+  const portuguese = f.notifications.at(-1);
+  assert.match(portuguese, /Economist · ON · cadência prompt · avaliação rules/);
+  assert.match(portuguese, /esforço auto \(teto high/);
+  assert.match(portuguese, /pool \d+ modelo\(s\)/);
 
   // An unknown action still teaches the grammar.
   const unknown = await f.command('economist', 'nonsense').then(() => null, (e) => e.message);

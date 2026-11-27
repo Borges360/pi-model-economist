@@ -1,6 +1,15 @@
 {
   "name": "pi-model-economist",
   "description": "Pi context and cost optimizer with measured cache economics, structured compaction and adaptive model/effort routing.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Borges360/pi-model-economist.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Borges360/pi-model-economist/issues"
+  },
+  "homepage": "https://github.com/Borges360/pi-model-economist#readme",
   "files": [
     "index.ts",
     "extension.mjs",
@@ -15,10 +24,9 @@
     "learning/",
     "observability/",
     "lib/",
+    "vendor/",
     "docs/fluxo-de-decisao.md",
     "docs/v2.md",
-    "docs/assets/inteiro-mark.svg",
-    "docs/assets/INTEIRO-MARK-LICENSE.txt",
     "examples/pi-suite.yaml",
     "CHANGELOG.md"
   ],
@@ -32,10 +40,10 @@
     "pi-package"
   ],
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": ">=1.5.2 <1.7.0",
+    "@earendil-works/pi-agent-core": ">=1.5.2 <1.7.0",
     "@earendil-works/pi-ai": ">=1.5.2 <1.7.0",
-    "@earendil-works/pi-tui": ">=1.5.2 <1.7.0",
-    "@earendil-works/pi-agent-core": ">=1.5.2 <1.7.0"
+    "@earendil-works/pi-coding-agent": ">=1.5.2 <1.7.0",
+    "@earendil-works/pi-tui": ">=1.5.2 <1.7.0"
   },
   "dependencies": {
     "yaml": "2.8.2"
@@ -46,7 +54,10 @@
     ]
   },
   "scripts": {
-    "test": "node --test",
+    "test": "node --import ./test-support/setup-env.mjs --test",
     "test:host": "node scripts/check-load.mjs . && node scripts/smoke-dashboard.mjs && node scripts/smoke-worker.mjs"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-tui": "1.6.0"
   }
 }

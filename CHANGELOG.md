@@ -1,5 +1,31 @@
 # Changelog
 
+## Unreleased
+
+### Themes
+
+- On load, the extension copies the terminal adapter's color themes to `<agent-dir>/themes/` and lists them in the running session, so they appear in `/settings` without a separate install. It never selects a theme or overwrites an edited one; `PI_DESIGN_THEMES=off` skips the copy.
+
+### Terminal adapter
+
+- The vendored adapter moves to `@inteiro/terminal` 2.0.0-rc.1 (`6a1bd7d`). The focused row gets the host selection background (`selectedBg`) across the width; Save is painted as a real effect (`bashMode`, bold) and the other buttons as choices (`accent`); the empty search line no longer appears above the list and only shows while a filter is active.
+
+### Open source
+
+- Added `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, issue and pull request templates, and `SECURITY.md` with private vulnerability reporting.
+- README reorganized with the same sections in English and Brazilian Portuguese.
+- The project is now licensed under MIT (`LICENSE`); `package.json` declares `license`, `repository`, `bugs` and `homepage`.
+
+- `/economist` opens a settings panel built on a vendored copy of a terminal panel adapter (`vendor/inteiro-terminal/`, plain ESM, `"patches": []`, provenance and licence in `vendor/THIRD_PARTY_NOTICES.md`, integrity checked by `test/vendor.test.mjs` without the source checkout). It paints only with the Pi host theme.
+- Every setting is a row with its current value: language, routing, priority preset, control, context, retrieval budget, the three privacy policies, cadence, assessment, policy, effort, ceiling, fixed effort, pool source, rollout, algorithm, learning and delegation. Choosing a preset shows its consequences in the draft before Ctrl+S; an explicit edit after it wins.
+- Keys follow the Pi extension standard: ↑/↓ and Enter use the host bindings, Ctrl+S saves and keeps the panel open, Esc leaves a list without applying it, Esc on a draft warns and the second Esc discards, Esc during a save cancels it: an Esc that lands before the write (also while the model switch is still pending) writes nothing and restores the previous model; only when the outcome stays unconfirmed does Ctrl+S check storage before saving again.
+- Candidate pool, session economics, last decision, simulation and the command reference are rows that open their own screen and return to the panel. The pool and the simulation ask for a saved draft first; the read-only screens keep the draft.
+- The read-only screens (session economics, last decision, simulation result, command reference) are plain text that wraps whole words under their own indentation at any width and scrolls with ↑/↓ and PgUp/PgDn; they offer only Esc, without list, table or log actions. The command reference shows each command with its description below it, taken from the translation catalogs for every action and flag.
+- English by default with a Portuguese (Brazil) selector that previews every panel text, including keys, hints and errors, the scope line and the read-only screens; the text fallback without a TUI follows the same language instead of being fixed in Portuguese.
+- An untrusted project shows the language row as locked; global locks show as `[locked: global policy]` on their rows instead of hiding them.
+- Enabling routing with an empty pool states in the panel which models Ctrl+S will add; the separate confirmation dialog inside the save is gone.
+- Tests drive the real panel by key bytes with the pi-tui 1.6.0 keybindings (new devDependency `@earendil-works/pi-tui@1.6.0`); `npm run test:host` loads an isolated copy without `node_modules/pi-tui` through the installed Pi loader and renders every screen at 40/80/120 columns.
+
 ## 2.0.0 — 2026-11-18
 
 - Distinguish cache-hit call frequency from cached-token fraction, expose missing usage coverage, and deduplicate replayed tool-output accounting.

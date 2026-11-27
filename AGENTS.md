@@ -22,6 +22,9 @@
   tool returns routing advice and does not dispatch or mutate the parent.
 - This product has no selected INTEIRO design-system role. Do not claim adoption;
   preserve the mark's separate attribution/license notice where applicable.
+- The `/economist` panel runs on the vendored adapter in `vendor/inteiro-terminal/`
+  (code only, host theme, no palette, tokens, mark or slogan). Never edit it by hand:
+  regenerate it from the source checkout and keep `test/vendor.test.mjs` green.
 
 Use `.agents/skills/pi-model-economist` for product guidance. Its Cursor mirror
 is under `.cursor/skills/pi-model-economist`.

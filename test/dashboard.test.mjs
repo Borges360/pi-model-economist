@@ -1,23 +1,20 @@
+/**
+ * The `/economist` panel, driven the way a terminal drives it: key bytes (↑ ↓ Enter
+ * Ctrl+S Esc) into the real vendored Pi adapter, with the real pi-tui keybindings and
+ * width measure. No model is called and nothing is paid: simulations are dry runs.
+ */
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { mkdtemp, rm, mkdir, writeFile, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { parseDocument } from 'yaml';
+import { translationCatalogs } from '../lib/i18n.mjs';
 import install from '../extension.mjs';
-import { host, runDashboard } from '../menu.mjs';
-import { fakeTui } from '../test-support/fake-tui.mjs';
+import { host, openPiSettings, simulationScreen } from '../menu.mjs';
 import { fakePi } from '../test-support/fakes.mjs';
+import { attachScreens, waitForScreen, press, type, focus, choose, view, KEY } from '../test-support/panel.mjs';
 
-const tick = () => new Promise((r) => setImmediate(r));
-const waitForScreen = async (f) => {
-  for (let attempt = 0; attempt < 100 && !f.screen; attempt++)
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  assert.ok(f.screen, 'the interactive dashboard opens');
-};
-/** The dashboard writes through promises the UI never awaits: the drivers below hand
- * back the write promise, so a test awaits the effect instead of counting ticks
- * (tick-counting is the usual source of Windows flack). */
 const chat = (id, price, extra = {}) => ({
   provider: 'openrouter',
   id,
@@ -35,133 +32,148 @@ const POOL = [
   chat('mid/model', 1),
   chat('vision/model', 3, { input: ['text', 'image'] }),
 ];
+const TWO =
+  'modelEconomist:\n  candidates:\n    - id: openrouter/cheap/model\n      tier: 1\n      tools: true\n    - id: openrouter/mid/model\n      tier: 2\n      tools: true\n';
 
-const open = async (t, localExtra = '', models = POOL, { trusted = true, globalExtra = '' } = {}) => {
+const open = async (t, localExtra = '', models = POOL, { trusted = true, globalExtra = '', rows = 40 } = {}) => {
   const dir = await mkdtemp(join(tmpdir(), 'econ-menu-'));
   const old = process.env.PI_SUITE_HOME;
   process.env.PI_SUITE_HOME = join(dir, 'state');
-  let f;
   t.after(async () => {
-    f?.closeScreen?.();
     process.env.PI_SUITE_HOME = old;
     host.tui = undefined;
     host.agent = undefined;
     await rm(dir, { recursive: true, force: true });
   });
   await mkdir(join(dir, '.pi'), { recursive: true });
-  await writeFile(
-    join(dir, '.pi', 'pi-suite.yaml'),
-    localExtra || 'modelEconomist: {}\n',
-  );
+  await writeFile(join(dir, '.pi', 'pi-suite.yaml'), localExtra || 'modelEconomist: {}\n');
   if (globalExtra) {
     await mkdir(join(dir, 'state'), { recursive: true });
     await writeFile(join(dir, 'state', 'config.yaml'), globalExtra);
   }
-  const tui = fakeTui();
-  host.tui = tui.tuiPkg;
-  host.agent = tui.agentPkg;
-  f = fakePi(dir, models);
+  const f = fakePi(dir, models);
   f.ctx.isProjectTrusted = () => trusted;
-  f.ctx.ui.custom = (factory) =>
-    new Promise((resolve) => {
-      f.closeScreen = () => resolve({ changed: [] });
-      f.screen = factory({ requestRender: () => {} }, tui.theme, tui.keybindings, resolve);
-    });
+  const screens = attachScreens(f.ctx, { rows });
   install(f.pi);
   await f.emit('session_start');
-  return { dir, f, tui };
+  return { dir, f, screens };
 };
 
 const saved = async (dir) =>
   parseDocument(await readFile(join(dir, '.pi', 'pi-suite.yaml'), 'utf8')).toJS();
 const poolIds = (c) => c.candidates.map((x) => (typeof x === 'string' ? x : x.id)).sort();
-const chooseLanguage = async (settings, tui, locale) => {
-  settings.open('language');
-  await tui.created.select.at(-1).pick(locale);
-};
+/** Words that only exist in the Portuguese catalogs (product and adapter). */
+const PORTUGUESE = /ção|ções|ões|Idioma|Roteamento|ligado|desligado|Salvar|Fechar|Ajuda|Alterações|Buscar|navegar|Prioridade|Pedido|quando|esforço|classificador|indisponível|desconhecido/;
 
-test('the dashboard stages enum changes until Ctrl+S and stays open after saving', async (t) => {
-  const { dir, f, tui } = await open(t);
+test('the panel stages changes until Ctrl+S and stays open after saving', async (t) => {
+  const { dir, f, screens } = await open(t);
   const running = f.command('economist', '');
-  await waitForScreen(f);
-  assert.ok(f.screen, 'a custom screen took over the interactive area');
-  const settings = tui.created.settings[0];
-  assert.equal(settings.find('language').currentValue, 'English');
-  assert.match(f.screen.render(80).join('\n'), /Routing = on/);
-  assert.equal(settings.find('thinking').currentValue, 'auto', 'effort routing is the default');
-  assert.equal(settings.find('scope').currentValue, 'scoped', 'the scope is the default pool source');
+  const screen = await waitForScreen(screens);
+  const panel = screen.component;
+  assert.equal(screen.options.overlay, true, 'the panel is a temporary overlay, not an editor/footer replacement');
+  const first = view(panel, 80);
+  assert.match(first, /^Economist$/m);
+  assert.match(first, /Language\s+English/);
+  assert.match(first, /Routing\s+on/);
+  assert.match(first, /Effort \(thinking\)\s+auto/, 'effort routing is the default');
+  assert.match(first, /Pool source\s+\/scoped-models only/, 'the scope is the default pool source');
+  assert.match(first, /↑↓ navigate · Enter edit\/open · Ctrl\+S save/);
 
-  await settings.cycle('mode', 'rules');
-  await settings.cycle('policy', 'economy');
-  await settings.cycle('thinking', 'follow');
-  await settings.cycle('ceiling', 'xhigh');
-  await settings.cycle('cadence', 'session');
-  const beforeSave = (await saved(dir)).modelEconomist;
-  assert.notEqual(beforeSave.mode, 'rules', 'editing does not persist before an explicit save');
-  assert.match(f.screen.render(80).join('\n'), /draft/);
-  await f.screen.handleInput('\u0013');
-  const savedConf = (await saved(dir)).modelEconomist;
-  assert.equal(savedConf.mode, 'rules');
-  assert.equal(savedConf.policy, 'economy');
-  assert.equal(savedConf.thinking.mode, 'follow');
-  assert.equal(savedConf.thinking.ceiling, 'xhigh');
-  assert.equal(savedConf.cadence, 'session');
-  assert.ok(!f.customResult, 'saving keeps the dashboard open');
-  assert.doesNotMatch(f.screen.render(80).join('\n'), /draft/);
+  await choose(panel, 'mode', 'rules');
+  await choose(panel, 'policy', 'economy');
+  await choose(panel, 'thinking', 'follow');
+  await choose(panel, 'ceiling', 'xhigh');
+  await choose(panel, 'cadence', 'session');
+  assert.notEqual((await saved(dir)).modelEconomist.mode, 'rules', 'editing does not persist before an explicit save');
+  assert.match(view(panel, 80), /^Economist \*$/m, 'the title marks the draft');
+  assert.match(view(panel, 80), /Unsaved changes/);
 
-  settings.onCancel();
+  await press(panel, KEY.ctrlS);
+  const file = (await saved(dir)).modelEconomist;
+  assert.equal(file.mode, 'rules');
+  assert.equal(file.policy, 'economy');
+  assert.equal(file.thinking.mode, 'follow');
+  assert.equal(file.thinking.ceiling, 'xhigh');
+  assert.equal(file.cadence, 'session');
+  assert.equal(screen.closed, false, 'saving keeps the panel open');
+  const after = view(panel, 80);
+  assert.match(after, /^Economist$/m, 'no draft marker after the save');
+  assert.match(after, /Settings saved to/);
+  assert.match(after, /pi-suite\.yaml/);
+
+  await press(panel, KEY.esc);
   await running;
+  assert.equal(screen.closed, true);
   assert.match(f.notifications.at(-1), /5 change\(s\)/, 'the closing summary counts what changed');
+  assert.match(f.notifications.at(-1), /How to assess a task: hybrid → rules/);
 });
 
 test('language previews immediately, saves only to the trusted project, and reloads there', async (t) => {
   const globalConfig = 'modelEconomist:\n  locale: pt-BR\n';
-  const { dir, f, tui } = await open(t, 'modelEconomist: {}\n', POOL, { globalExtra: globalConfig });
+  const { dir, f, screens } = await open(t, 'modelEconomist: {}\n', POOL, { globalExtra: globalConfig });
   const running = f.command('economist', '');
-  await waitForScreen(f);
-  const settings = tui.created.settings[0];
-  assert.equal(settings.find('language').currentValue, 'English', 'global locale is ignored');
-  assert.match(f.screen.render(80).join('\n'), /Routing = on/);
+  const panel = (await waitForScreen(screens)).component;
+  const english = view(panel, 120);
+  assert.match(english, /Language\s+English/, 'the global locale is ignored');
+  assert.doesNotMatch(english, PORTUGUESE, 'no Portuguese string in the English panel');
 
-  await chooseLanguage(settings, tui, 'pt-BR');
-  assert.equal(settings.find('language').currentValue, 'Português');
-  for (const width of [40, 80, 120]) assert.match(f.screen.render(width).join('\n'), /Roteamento = on/);
-  assert.match(f.screen.render(80).join('\n'), /rascunho/);
-  assert.equal((await saved(dir)).modelEconomist.locale, undefined, 'preview is not persisted');
-  await chooseLanguage(settings, tui, 'en');
-  assert.equal(settings.find('language').currentValue, 'English');
-  assert.match(f.screen.render(80).join('\n'), /Routing = on/);
-  await chooseLanguage(settings, tui, 'pt-BR');
+  await choose(panel, 'language', 'pt-BR');
+  for (const width of [40, 80, 120]) {
+    const text = view(panel, width);
+    assert.match(text, /Idioma/);
+    assert.match(text, /Roteamento/);
+    assert.match(text, /Salvar/, 'the adapter texts switch too');
+  }
+  assert.match(view(panel, 120), /Idioma\s+Português/);
+  assert.match(view(panel, 80), /Alterações não salvas/);
+  assert.doesNotMatch(view(panel, 120), /Save changes|Unsaved changes|Routing\b/, 'no English left in the Portuguese preview');
+  assert.equal((await saved(dir)).modelEconomist.locale, undefined, 'the preview is not persisted');
+  await choose(panel, 'language', 'en');
+  assert.match(view(panel, 80), /Language\s+English/);
+  await choose(panel, 'language', 'pt-BR');
 
-  await f.screen.handleInput('\u0013');
+  await press(panel, KEY.ctrlS);
   assert.equal((await saved(dir)).modelEconomist.locale, 'pt-BR');
-  assert.equal(await readFile(join(dir, 'state', 'config.yaml'), 'utf8'), globalConfig);
-  settings.onCancel();
+  assert.equal(await readFile(join(dir, 'state', 'config.yaml'), 'utf8'), globalConfig, 'the global file is untouched');
+  assert.match(view(panel, 80), /Configurações salvas em/);
+  await press(panel, KEY.esc);
   await running;
 
-  f.screen = undefined;
   const reopened = f.command('economist', '');
-  await waitForScreen(f);
-  assert.equal(tui.created.settings.at(-1).find('language').currentValue, 'Português');
-  assert.match(f.screen.render(80).join('\n'), /Roteamento = on/);
-  tui.created.settings.at(-1).onCancel();
+  const again = (await waitForScreen(screens, 2)).component;
+  assert.match(view(again, 120), /Idioma\s+Português/);
+  assert.match(view(again, 120), /Roteamento\s+ligado/);
+  await press(again, KEY.esc);
   await reopened;
 });
 
-test('an untrusted project can preview language but cannot persist it globally', async (t) => {
-  const { dir, f, tui } = await open(t, 'modelEconomist: {}\n', POOL, { trusted: false });
+test('discarding a language preview goes back to the saved language', async (t) => {
+  const { dir, f, screens } = await open(t);
   const running = f.command('economist', '');
-  await waitForScreen(f);
-  const settings = tui.created.settings[0];
-  await chooseLanguage(settings, tui, 'pt-BR');
-  assert.match(f.screen.render(80).join('\n'), /Roteamento = on/);
-  await f.screen.handleInput('\u0013');
-  assert.match(f.notifications.at(-1), /projeto confiável/);
+  const panel = (await waitForScreen(screens)).component;
+  await choose(panel, 'language', 'pt-BR');
+  assert.match(view(panel, 80), /Idioma/);
+  await press(panel, KEY.esc);
+  assert.match(view(panel, 80), /Há alterações não salvas/);
+  await press(panel, KEY.esc);
+  await running;
   assert.equal((await saved(dir)).modelEconomist.locale, undefined);
-  await assert.rejects(readFile(join(dir, 'state', 'config.yaml')));
-  assert.match(f.screen.render(80).join('\n'), /rascunho/);
-  f.screen.handleInput('\u001b');
-  f.screen.handleInput('\u001b');
+  assert.match(f.notifications.at(-1), /no changes/i, 'the summary is in the saved language');
+});
+
+test('an untrusted project shows the language as locked and writes nothing', async (t) => {
+  const { dir, f, screens } = await open(t, 'modelEconomist: {}\n', POOL, { trusted: false });
+  const running = f.command('economist', '');
+  const panel = (await waitForScreen(screens)).component;
+  assert.match(view(panel, 120), /Language\s+English\s+\[locked: untrusted project\]/);
+  await focus(panel, 'language');
+  await press(panel, KEY.enter);
+  assert.match(view(panel, 120), /Locked by untrusted project/);
+  assert.equal(panel.controller.session.editing, undefined, 'no editor opens on a locked field');
+  assert.equal(panel.controller.session.dirty, false);
+  assert.equal((await saved(dir)).modelEconomist.locale, undefined);
+  await assert.rejects(readFile(join(dir, 'state', 'config.yaml')), 'nothing is written globally');
+  await press(panel, KEY.esc);
   await running;
 });
 
@@ -171,11 +183,8 @@ test('project locale does not leak when the active project changes', async (t) =
   process.env.PI_SUITE_HOME = join(root, 'state');
   t.after(async () => {
     process.env.PI_SUITE_HOME = old;
-    host.tui = undefined;
-    host.agent = undefined;
     await rm(root, { recursive: true, force: true });
   });
-
   const firstProject = join(root, 'first');
   const secondProject = join(root, 'second');
   await mkdir(join(firstProject, '.pi'), { recursive: true });
@@ -185,79 +194,82 @@ test('project locale does not leak when the active project changes', async (t) =
   await writeFile(join(secondProject, '.pi', 'pi-suite.yaml'), 'modelEconomist: {}\n');
   await writeFile(join(root, 'state', 'config.yaml'), 'modelEconomist:\n  locale: pt-BR\n');
 
-  const tui = fakeTui();
-  host.tui = tui.tuiPkg;
-  host.agent = tui.agentPkg;
   const f = fakePi(firstProject, POOL);
-  f.ctx.ui.custom = (factory) => new Promise((resolve) => {
-    f.closeScreen = () => resolve({ changed: [] });
-    f.screen = factory({ requestRender: () => {} }, tui.theme, tui.keybindings, resolve);
-  });
+  const screens = attachScreens(f.ctx);
   install(f.pi);
   await f.emit('session_start');
   let running = f.command('economist', '');
-  await waitForScreen(f);
-  assert.equal(tui.created.settings.at(-1).find('language').currentValue, 'Português');
-  tui.created.settings.at(-1).onCancel();
+  let panel = (await waitForScreen(screens)).component;
+  assert.match(view(panel, 120), /Idioma\s+Português/);
+  await press(panel, KEY.esc);
   await running;
 
-  f.screen = undefined;
   f.ctx.cwd = secondProject;
   await f.emit('session_start');
   running = f.command('economist', '');
-  await waitForScreen(f);
-  assert.equal(tui.created.settings.at(-1).find('language').currentValue, 'English');
-  assert.match(f.screen.render(80).join('\n'), /Routing = on/);
-  tui.created.settings.at(-1).onCancel();
+  panel = (await waitForScreen(screens, 2)).component;
+  assert.match(view(panel, 120), /Language\s+English/);
+  assert.match(view(panel, 120), /Routing\s+on/);
+  await press(panel, KEY.esc);
   await running;
 });
 
-test('pool edits stay in the draft until Ctrl+S', async (t) => {
-  const { dir, f, tui } = await open(
-    t,
-    'modelEconomist:\n  candidates:\n    - id: openrouter/cheap/model\n      tier: 1\n      tools: true\n    - id: openrouter/mid/model\n      tier: 2\n      tools: true\n',
-  );
+test('pool edits stay in their own draft until Ctrl+S, and the pool waits for a saved main draft', async (t) => {
+  const { dir, f, screens } = await open(t, TWO);
   const running = f.command('economist', '');
-  await waitForScreen(f);
-  const settings = tui.created.settings[0];
+  const main = (await waitForScreen(screens)).component;
+  assert.match(view(main, 120), /Candidate pool\s+2 model\(s\)/);
 
-  settings.open('pool');
-  const poolSelect = tui.created.select.at(-1);
-  assert.deepEqual(poolSelect.items.map((i) => i.value), [
-    'openrouter/cheap/model',
-    'openrouter/mid/model',
-  ]);
-  poolSelect.pick('openrouter/mid/model');
-  const editSelect = tui.created.select.at(-1);
-  assert.ok(editSelect.items.some((i) => i.value === 'tier:4'), 'the edit screen offers tiers');
-  assert.equal(settings.find('poolEdit'), undefined, 'editing happens inside the pool');
-  await editSelect.pick('tier:4');
+  // A dirty main draft is never silently dropped by leaving for the pool.
+  await choose(main, 'mode', 'rules');
+  await focus(main, 'pool');
+  await press(main, KEY.enter);
+  assert.equal(screens.screens.length, 1, 'the pool does not open over an unsaved draft');
+  assert.match(view(main, 120), /Save \(Ctrl\+S\) or discard your changes/);
+  await choose(main, 'mode', 'hybrid');
+  assert.equal(main.controller.session.dirty, false);
+
+  await focus(main, 'pool');
+  await press(main, KEY.enter);
+  const poolScreen = await waitForScreen(screens, 2);
+  const pool = poolScreen.component;
+  const listed = view(pool, 120);
+  assert.match(listed, /Economist · candidate pool/);
+  assert.match(listed, /cheap\/model · in pool\s+on/);
+  assert.match(listed, /mid\/model · tier\s+tier 2/);
+
+  await choose(pool, 'tier:openrouter/mid/model', '4');
   assert.equal(
     (await saved(dir)).modelEconomist.candidates.find((c) => c.id === 'openrouter/mid/model').tier,
     2,
     'pool edits do not persist before save',
   );
-
-  assert.equal(settings.find('poolAdd'), undefined);
-  await tui.created.select.at(-1).pick('openrouter/cheap/model');
-  await tui.created.select.at(-1).pick('tools:off');
-  const afterTools = (await saved(dir)).modelEconomist;
-  assert.equal(afterTools.candidates.find((c) => c.id === 'openrouter/cheap/model').tools, true);
-  await tui.created.select.at(-1).pick('openrouter/cheap/model');
-  await tui.created.select.at(-1).pick('remove');
+  await focus(pool, 'tools:openrouter/cheap/model');
+  await press(pool, KEY.enter);
+  assert.equal((await saved(dir)).modelEconomist.candidates.find((c) => c.id === 'openrouter/cheap/model').tools, true);
+  await focus(pool, 'member:openrouter/cheap/model');
+  await press(pool, KEY.enter);
   assert.deepEqual(poolIds((await saved(dir)).modelEconomist), ['openrouter/cheap/model', 'openrouter/mid/model']);
-  await f.screen.handleInput('\u0013');
-  assert.deepEqual(poolIds((await saved(dir)).modelEconomist), ['openrouter/mid/model']);
-  settings.onCancel();
+
+  await press(pool, KEY.ctrlS);
+  const file = (await saved(dir)).modelEconomist;
+  assert.deepEqual(poolIds(file), ['openrouter/mid/model']);
+  assert.equal(file.candidates[0].tier, 4);
+  assert.equal(poolScreen.closed, false, 'saving keeps the pool open');
+
+  await press(pool, KEY.esc);
+  const back = (await waitForScreen(screens, 3)).component;
+  assert.match(view(back, 120), /Candidate pool\s+1 model\(s\)/, 'Esc returns to the main panel with the new pool');
+  await press(back, KEY.esc);
   await running;
+  assert.match(f.notifications.at(-1), /change\(s\)/);
 });
 
-test('a failed save preserves the draft and the effective configuration for retry', async (t) => {
-  const { dir, f, tui } = await open(t);
+test('a failed save keeps the draft and the active model, and a retry saves it', async (t) => {
+  const { dir, f, screens } = await open(t);
   const running = f.command('economist', '');
-  await waitForScreen(f);
-  const settings = tui.created.settings[0];
-  await settings.cycle('mode', 'rules');
+  const panel = (await waitForScreen(screens)).component;
+  await choose(panel, 'mode', 'rules');
   const original = (await saved(dir)).modelEconomist;
   const effectiveModel = f.ctx.model;
 
@@ -266,146 +278,202 @@ test('a failed save preserves the draft and the effective configuration for retr
   const blockedTarget = join(dir, 'state', 'config.yaml');
   await mkdir(blockedTarget, { recursive: true });
   f.ctx.isProjectTrusted = () => false;
-  await f.screen.handleInput('\u0013');
+  await press(panel, KEY.ctrlS);
   assert.equal((await saved(dir)).modelEconomist.mode, original.mode);
-  assert.match(f.screen.render(80).join('\n'), /draft/);
-  assert.match(f.notifications.at(-1), /Save failed/);
+  const failed = view(panel, 120);
+  assert.match(failed, /Save failed; the draft was kept/);
+  assert.match(failed, /^Economist \*$/m, 'the draft is still there');
+  assert.match(failed, /How to assess a task\s+rules/);
   assert.equal(f.ctx.model, effectiveModel, 'a failed write does not switch the active model');
 
   f.ctx.isProjectTrusted = () => true;
   await rm(blockedTarget, { recursive: true, force: true });
-  await f.screen.handleInput('\u0013');
+  await press(panel, KEY.ctrlS);
   assert.equal((await saved(dir)).modelEconomist.mode, 'rules');
-  assert.doesNotMatch(f.screen.render(80).join('\n'), /draft/);
-  settings.onCancel();
+  assert.match(view(panel, 80), /^Economist$/m);
+  await press(panel, KEY.esc);
   await running;
 });
 
-test('Esc in a submenu returns to the draft; root Esc warns and then discards', async (t) => {
-  const { dir, f, tui } = await open(t);
+test('Esc in an editor returns without applying; root Esc warns and a second Esc discards', async (t) => {
+  const { dir, f, screens } = await open(t);
   const running = f.command('economist', '');
-  await waitForScreen(f);
-  const settings = tui.created.settings[0];
-  await settings.cycle('mode', 'rules');
-  const originalMode = (await saved(dir)).modelEconomist.mode;
-  settings.open('help');
-  settings.top().handleInput('\u001b');
-  assert.ok(!f.customResult, 'Esc from the submenu returns to the dashboard');
-  assert.match(f.screen.render(80).join('\n'), /draft/);
-  assert.notEqual((await saved(dir)).modelEconomist.mode, 'rules');
+  const screen = await waitForScreen(screens);
+  const panel = screen.component;
+  await choose(panel, 'mode', 'rules');
+  const before = (await saved(dir)).modelEconomist;
+  const policy = panel.controller.session.draft.policy;
 
-  f.screen.handleInput('\u001b');
-  assert.ok(!f.customResult, 'the first root Esc warns instead of discarding');
-  assert.match(f.notifications.at(-1), /Esc again to discard/);
-  f.screen.handleInput('\u001b');
+  await focus(panel, 'policy');
+  await press(panel, KEY.enter, KEY.down);
+  assert.ok(panel.controller.session.editing, 'the choice list is open');
+  await press(panel, KEY.esc);
+  assert.equal(panel.controller.session.editing, undefined, 'Esc closed the list');
+  assert.equal(panel.controller.session.draft.policy, policy, 'the incomplete edit was not applied');
+  assert.equal(screen.closed, false);
+
+  await press(panel, KEY.esc);
+  assert.equal(screen.closed, false, 'the first root Esc warns instead of discarding');
+  const warning = view(panel, 80);
+  assert.match(warning, /There are unsaved changes/);
+  assert.match(warning, /Press Esc again to discard/);
+  await press(panel, KEY.esc);
   await running;
-  assert.equal((await saved(dir)).modelEconomist.mode, originalMode);
-  assert.match(f.notifications.at(-1), /draft|no changes/i);
+  assert.equal(screen.closed, true);
+  assert.equal((await saved(dir)).modelEconomist.mode, before.mode);
+  assert.match(f.notifications.at(-1), /no changes/i);
 });
 
-test('simulation refuses unsaved drafts instead of evaluating them', async (t) => {
-  const { dir, f, tui } = await open(t);
-  const running = f.command('economist', '');
-  await waitForScreen(f);
-  const settings = tui.created.settings[0];
-  await settings.cycle('mode', 'rules');
-  settings.open('simulate');
-  const input = tui.created.input.at(-1);
-  await input.submit('refatorar autenticação');
-  assert.match(settings.top().render(80).join('\n'), /Save or discard the draft/);
-  assert.notEqual((await saved(dir)).modelEconomist.mode, 'rules');
-  settings.top().handleInput('\u001b');
-  f.screen.handleInput('\u001b');
-  f.screen.handleInput('\u001b');
-  await running;
-});
-
-test('the dashboard renders without models or providers and keeps Unicode across terminal widths', async (t) => {
-  const { f, tui } = await open(t, '', []);
-  const running = f.command('economist', '');
-  await waitForScreen(f);
-  assert.ok(f.screen, 'the dashboard opens without a model catalogue');
-  for (const width of [40, 80, 120]) {
-    const rendered = f.screen.render(width).join('\n');
-    assert.match(rendered, /Economist/);
-    assert.match(rendered, /·/);
-  }
-  const settings = tui.created.settings[0];
-  f.screen.handleInput('\u001b');
-  await running;
-});
-
-test('a cancelled in-flight simulation aborts and ignores its late callback', async (t) => {
-  const { f, tui } = await open(t);
-  let signal;
-  let resolveSimulation;
-  const items = [{ id: 'simulate', label: 'Simular', currentValue: 'abrir', submenu: true }];
-  const running = runDashboard({
-    ctx: f.ctx,
-    title: 'Economist · ação',
-    items,
-    onChange: async () => undefined,
-    onSave: async () => null,
-    isDirty: () => false,
-    onDiscard: () => {},
-    menus: {
-      pool: () => [],
-      candidateRows: () => [],
-      explain: () => [],
-      help: () => [],
-      simulate: (_text, options) => new Promise((resolve) => {
-        signal = options.signal;
-        resolveSimulation = resolve;
-      }),
-    },
-  }, { tuiPkg: tui.tuiPkg, agentPkg: tui.agentPkg });
-  await waitForScreen(f);
-  const settings = tui.created.settings[0];
-  const root = f.screen;
-  for (const width of [40, 80, 120]) assert.match(root.render(width).join('\n'), /ação/);
-  settings.open('simulate');
-  const pending = tui.created.input.at(-1).submit('pedido com ação');
-  await tick();
-  assert.ok(signal && !signal.aborted, 'the simulation receives a live cancellation signal');
-  settings.top().handleInput('\u001b');
-  assert.equal(signal.aborted, true, 'Esc cancels the pending operation');
-  settings.top().handleInput('\u001b');
-  root.handleInput('\u001b');
-  await running;
-  resolveSimulation(['resultado atrasado que não pode aparecer']);
-  await pending;
-  assert.doesNotMatch(root.render(80).join('\n'), /resultado atrasado/);
-});
-
-test('the simulate panel routes a turn for free and esc leaves the dashboard open', async (t) => {
-  const { f, tui } = await open(
+test('the simulation waits for a saved draft and then routes a request for free', async (t) => {
+  const { f, screens } = await open(
     t,
     'modelEconomist:\n  mode: rules\n  candidates:\n    - id: openrouter/cheap/model\n      tier: 1\n      tools: true\n    - id: openrouter/mid/model\n      tier: 3\n      tools: true\n',
   );
   const running = f.command('economist', '');
-  await waitForScreen(f);
-  const settings = tui.created.settings[0];
+  const main = (await waitForScreen(screens)).component;
+  await choose(main, 'policy', 'quality');
+  await focus(main, 'simulate');
+  await press(main, KEY.enter);
+  assert.equal(screens.screens.length, 1, 'simulation never evaluates an unsaved draft');
+  assert.match(view(main, 120), /Save \(Ctrl\+S\) or discard your changes/);
+  await choose(main, 'policy', 'balanced');
 
-  settings.open('simulate');
-  const screen = settings.top();
-  // Keys reach the component, exactly as the terminal delivers them.
-  for (const ch of 'olá') screen.handleInput(ch);
-  await screen.handleInput('\r');
-  const lines = screen.render(80).join('\n');
+  await focus(main, 'simulate');
+  await press(main, KEY.enter);
+  const simulate = (await waitForScreen(screens, 2)).component;
+  assert.match(view(simulate, 120), /Run simulation\s+\[unavailable: Enter a request to simulate\.\]/);
+  await focus(simulate, 'request');
+  await press(simulate, KEY.enter);
+  await type(simulate, 'olá');
+  await press(simulate, KEY.enter);
+  await focus(simulate, 'run');
+  await press(simulate, KEY.enter);
+
+  const result = (await waitForScreen(screens, 3)).component;
+  const lines = view(result, 120);
+  assert.match(lines, /Economist · simulation result/);
   assert.match(lines, /openrouter\/cheap\/model/, 'the dry run names the model it would use');
   assert.match(lines, /effort selected by/, 'and the effort it would dispatch');
-  assert.equal(tui.created.settings.length, 1, 'simulate never rebuilt the dashboard');
-  assert.equal(tui.created.input.length, 1, 'one input, reused');
-
-  screen.handleInput('\u001b'); // esc once: back to the main screen
-  assert.ok(!f.customResult, 'the dashboard is still open');
-  settings.onCancel();
+  await press(result, KEY.esc);
+  const back = (await waitForScreen(screens, 4)).component;
+  assert.match(view(back, 80), /^Economist$/m, 'Esc returns to the main panel');
+  await press(back, KEY.esc);
   await running;
   assert.match(f.notifications.at(-1), /no changes/i);
 });
 
-test('the explain panel quotes the last real decision', async (t) => {
-  const { f, tui } = await open(
+test('a cancelled in-flight simulation aborts and ignores its late result', async () => {
+  const ctx = { ui: {} };
+  const screens = attachScreens(ctx);
+  let signal;
+  let resolveRun;
+  const { session, ...screen } = simulationScreen('en', {
+    run: (_text, operationSignal) => new Promise((resolve) => {
+      signal = operationSignal;
+      resolveRun = resolve;
+    }),
+  });
+  const owner = new AbortController();
+  const opening = openPiSettings(ctx.ui, { session, ...screen, signal: owner.signal, locale: 'en' });
+  const mounted = await waitForScreen(screens);
+  const panel = mounted.component;
+  await focus(panel, 'request');
+  await press(panel, KEY.enter);
+  await type(panel, 'pedido com ação');
+  await press(panel, KEY.enter);
+  await focus(panel, 'run');
+  panel.handleInput(KEY.enter);
+  for (let i = 0; i < 50 && !signal; i++) await new Promise((r) => setTimeout(r, 5));
+  assert.ok(signal && !signal.aborted, 'the simulation receives a live cancellation signal');
+  for (const width of [40, 80, 120]) view(panel, width);
+
+  panel.handleInput(KEY.esc);
+  assert.equal(signal.aborted, true, 'Esc cancels the pending operation');
+  resolveRun(['late result that must not appear']);
+  await panel.drain();
+  await new Promise((r) => setImmediate(r));
+  assert.equal(mounted.closed, false, 'a late result never closes the screen');
+  assert.equal(panel.controller.closedWith, undefined, 'and is never handed over');
+  assert.doesNotMatch(view(panel, 120), /late result/);
+
+  await press(panel, KEY.esc, KEY.esc);
+  const result = await opening;
+  assert.equal(result.action, undefined);
+});
+
+test('the simulation request is not a draft: no unsaved marker, Ctrl+S says why, one Esc closes', async () => {
+  const ctx = { ui: {} };
+  const screens = attachScreens(ctx);
+  let ran = 0;
+  const { session, ...screen } = simulationScreen('en', { run: async () => { ran++; return ['never']; } });
+  const opening = openPiSettings(ctx.ui, { session, ...screen, signal: new AbortController().signal, locale: 'en' });
+  const mounted = await waitForScreen(screens);
+  const panel = mounted.component;
+  assert.match(view(panel, 120), /Run simulation\s+\[unavailable: Enter a request to simulate\.\]/);
+  await focus(panel, 'request');
+  await press(panel, KEY.enter);
+  await type(panel, 'refactor auth');
+  await press(panel, KEY.enter);
+  assert.equal(panel.controller.session.draft.request, 'refactor auth');
+  const typed = view(panel, 80);
+  assert.match(typed, /^Economist · simulate a request$/m, 'no draft marker on the title');
+  assert.doesNotMatch(typed, /Unsaved changes/);
+  assert.doesNotMatch(view(panel, 120), /Run simulation\s+\[unavailable/, 'the request enables Run');
+
+  await press(panel, KEY.ctrlS);
+  assert.match(view(panel, 120), /This screen has nothing to save; choose Run simulation\./, 'Ctrl+S is not silent');
+  assert.equal(mounted.closed, false);
+  assert.equal(ran, 0, 'Ctrl+S never runs the simulation');
+
+  await press(panel, KEY.esc);
+  assert.equal(mounted.closed, true, 'a single Esc leaves: there is nothing to discard');
+  const result = await opening;
+  assert.equal(result.action, undefined);
+});
+
+test('the panel renders without models or providers and keeps Unicode within 40/80/120 columns', async (t) => {
+  const { f, screens } = await open(t, '', []);
+  const running = f.command('economist', '');
+  const panel = (await waitForScreen(screens)).component;
+  for (const width of [40, 80, 120]) {
+    const rendered = view(panel, width);
+    assert.match(rendered, /Economist/);
+    assert.match(rendered, /·/);
+  }
+  await press(panel, KEY.esc);
+  await running;
+});
+
+test('pool rows with wide Unicode model names stay within the terminal width', async (t) => {
+  const wide = [chat('模型/ü-ação-🚀', 0.5), chat('cheap/model', 0.2)];
+  const { f, screens } = await open(
+    t,
+    'modelEconomist:\n  candidates:\n    - id: openrouter/模型/ü-ação-🚀\n      tier: 2\n      tools: true\n    - id: openrouter/cheap/model\n      tier: 1\n      tools: true\n',
+    wide,
+  );
+  const running = f.command('economist', '');
+  const main = (await waitForScreen(screens)).component;
+  await focus(main, 'pool');
+  await press(main, KEY.enter);
+  const pool = (await waitForScreen(screens, 2)).component;
+  for (const width of [40, 80, 120]) assert.match(view(pool, width), /模型/);
+  await press(pool, KEY.esc);
+  await press((await waitForScreen(screens, 3)).component, KEY.esc);
+  await running;
+});
+
+test('a terminal below 40x12 asks to be enlarged instead of drawing a broken panel', async (t) => {
+  const { f, screens } = await open(t, '', POOL, { rows: 10 });
+  const running = f.command('economist', '');
+  const panel = (await waitForScreen(screens)).component;
+  assert.match(view(panel, 80), /Terminal too small/);
+  assert.match(view(panel, 30), /Terminal too small/);
+  await press(panel, KEY.esc);
+  await running;
+});
+
+test('the last-decision row quotes the last real decision and opens it read-only', async (t) => {
+  const { f, screens } = await open(
     t,
     'modelEconomist:\n  mode: rules\n  enabled: true\n  candidates:\n    - id: openrouter/cheap/model\n      tier: 1\n      tools: true\n',
   );
@@ -414,11 +482,223 @@ test('the explain panel quotes the last real decision', async (t) => {
     f.ctx,
   );
   const running = f.command('economist', '');
-  await waitForScreen(f);
-  const settings = tui.created.settings[0];
-  assert.match(settings.find('explain').currentValue, /cheap\/model:off/);
-  settings.open('explain');
-  assert.match(settings.top().render(80).join('\n'), /model \+ effort: openrouter\/cheap\/model:off/);
-  settings.onCancel();
+  const main = (await waitForScreen(screens)).component;
+  assert.match(view(main, 120), /Last decision\s+cheap\/model:off/);
+  await focus(main, 'explain');
+  await press(main, KEY.enter);
+  const explain = (await waitForScreen(screens, 2)).component;
+  const text = view(explain, 120);
+  assert.match(text, /Last decision/);
+  assert.match(text, /model \+ effort: openrouter\/cheap\/model:off/);
+  assert.match(text, /read-only/);
+  for (const width of [40, 80]) view(explain, width);
+  await press(explain, KEY.esc);
+  await press((await waitForScreen(screens, 3)).component, KEY.esc);
+  await running;
+});
+
+test('a draft survives a trip to the read-only views', async (t) => {
+  const { dir, f, screens } = await open(t);
+  const running = f.command('economist', '');
+  const main = (await waitForScreen(screens)).component;
+  await choose(main, 'mode', 'rules');
+  await choose(main, 'language', 'pt-BR');
+  for (const id of ['economics', 'help']) {
+    const index = screens.screens.length;
+    await focus(screens.component, id);
+    await press(screens.component, KEY.enter);
+    const opened = (await waitForScreen(screens, index + 1)).component;
+    assert.match(view(opened, 120), /somente leitura/, `${id} opens in the previewed language`);
+    await press(opened, KEY.esc);
+    const back = (await waitForScreen(screens, index + 2)).component;
+    assert.match(view(back, 120), /Como avaliar a tarefa\s+rules/, 'the draft came back with the panel');
+    assert.match(view(back, 80), /^Economist \*$/m);
+  }
+  assert.notEqual((await saved(dir)).modelEconomist.mode, 'rules');
+  await press(screens.component, KEY.ctrlS);
+  assert.equal((await saved(dir)).modelEconomist.mode, 'rules');
+  assert.equal((await saved(dir)).modelEconomist.locale, 'pt-BR');
+  await press(screens.component, KEY.esc);
+  await running;
+});
+
+/** Words that only exist in the English catalogs (product views and adapter). */
+const ENGLISH = /\b(enable routing|switch to|stop routing|trade-off|whether effort|choose|show this|unknown|quality floor|safety floor|Decision causes|model \+ effort|reason|read-only|returns to|scroll|close|lines|Actual|verified|Context|Latency|Cost error|observed|available)\b/;
+
+/** Open one read-only row of the panel and return its screen, in a tall terminal by default. */
+const openView = async (screens, panel, id) => {
+  const index = screens.screens.length;
+  await focus(panel, id);
+  await press(panel, KEY.enter);
+  return (await waitForScreen(screens, index + 1)).component;
+};
+
+for (const [locale, foreign, own] of [['en', PORTUGUESE, /read-only/], ['pt-BR', ENGLISH, /somente leitura/]])
+  test(`help, economics and last-decision views speak only ${locale}`, async (t) => {
+    const { f, screens } = await open(
+      t,
+      `modelEconomist:\n  locale: ${locale}\n  mode: rules\n  enabled: true\n  candidates:\n    - id: openrouter/cheap/model\n      tier: 1\n      tools: true\n`,
+      POOL,
+      { rows: 400 },
+    );
+    await f.pi.virtual.route({ reason: 'user', messages: [{ role: 'user', content: 'olá' }], thinkingLevel: 'off' }, f.ctx);
+    const running = f.command('economist', '');
+    const main = (await waitForScreen(screens)).component;
+    const scope = view(main, 120).split('\n')[1];
+    assert.match(scope, locale === 'en' ? /^routing on · / : /^roteamento ligado · /, 'the scope line names the routing state in the panel language');
+    for (const id of ['help', 'economics', 'explain']) {
+      const screen = await openView(screens, screens.component, id);
+      for (const width of [40, 80, 120]) {
+        const text = view(screen, width);
+        assert.match(text, own, `${id} is a ${locale} view`);
+        assert.doesNotMatch(text, foreign, `${id} at ${width} columns has no text in the other language`);
+      }
+      const count = screens.screens.length;
+      await press(screen, KEY.esc);
+      await waitForScreen(screens, count + 1);
+    }
+    await press(screens.component, KEY.esc);
+    await running;
+  });
+
+test('the command reference describes every action in the panel language', async (t) => {
+  for (const locale of ['en', 'pt-BR']) {
+    const { f, screens } = await open(t, `modelEconomist:\n  locale: ${locale}\n`, POOL, { rows: 400 });
+    const running = f.command('economist', '');
+    const main = (await waitForScreen(screens)).component;
+    const help = await openView(screens, main, 'help');
+    const lines = view(help, 200).split('\n');
+    const actions = lines.map((line) => line.match(/^\/economist ([a-z-]+)/)?.[1]).filter(Boolean);
+    assert.ok(actions.length >= 25, `${locale}: every action is listed`);
+    for (const action of actions)
+      assert.ok(Object.hasOwn(translationCatalogs()[locale], `help.${action}`), `${locale}: help.${action} is translated`);
+    for (const [i, line] of lines.entries())
+      if (/^\/economist [a-z-]+/.test(line)) assert.match(lines[i + 1], /^ {4}\S/, `${locale}: "${line}" is followed by its description`);
+    await press(help, KEY.esc);
+    await press((await waitForScreen(screens, 3)).component, KEY.esc);
+    await running;
+  }
+});
+
+test('read-only views wrap whole words under their indentation and offer only scrolling and Esc', async (t) => {
+  const { f, screens } = await open(t, 'modelEconomist:\n  locale: pt-BR\n', POOL, { rows: 30 });
+  const running = f.command('economist', '');
+  const main = (await waitForScreen(screens)).component;
+  const help = await openView(screens, main, 'help');
+  for (const width of [40, 80, 120]) {
+    const text = view(help, width);
+    assert.doesNotMatch(text, /Tabela|Ordenar|Pausar logs|\[Resultados\]/, 'no table/log actions on a text view');
+    const body = text.split('\n').slice(3, -3);
+    for (const line of body.slice(1)) assert.match(line, /^(\/economist |\s)/, `${width}: a wrapped line never restarts at column 0: ${JSON.stringify(line)}`);
+  }
+  assert.match(view(help, 120), /^\/economist on\n {4}ativa o roteamento e troca para economist\/auto$/m, 'at 120 columns a description is shown whole');
+  assert.match(view(help, 40), /^\/economist preset economy\|balanced\|\n {2}quality\|adaptive\|custom$/m, 'choices break after a bar, not inside a word');
+  const first = view(help, 80);
+  assert.match(first, /^1-\d+ de \d+ linhas$/m);
+  await press(help, KEY.down, KEY.down);
+  assert.match(view(help, 80), /^3-\d+ de \d+ linhas$/m, '↓ scrolls the text');
+  await press(help, KEY.esc);
+  const back = (await waitForScreen(screens, 3)).component;
+
+  const economics = await openView(screens, back, 'economics');
+  const narrow = view(economics, 40);
+  assert.doesNotMatch(narrow, /indisponíve\n|indisponív\n/, 'words are not cut at 40 columns');
+  assert.match(narrow, /Fração de tokens em cache: indisponível\n {2}· chamadas observadas 0 · chamadas sem\n {2}medição 0/);
+  await press(economics, KEY.esc);
+  await press((await waitForScreen(screens, 5)).component, KEY.esc);
+  await running;
+});
+
+/** Routing off with one candidate, and a `setModel` that waits until the test releases it. */
+const pendingModelSwitch = async (t) => {
+  const opened = await open(
+    t,
+    'modelEconomist:\n  enabled: false\n  candidates:\n    - id: openrouter/cheap/model\n      tier: 1\n      tools: true\n',
+  );
+  const setModel = opened.f.pi.setModel;
+  const pending = { calls: [], release: undefined };
+  opened.f.pi.setModel = (model) => {
+    pending.calls.push(`${model.provider}/${model.id}`);
+    // Only the first switch (to economist/auto) waits; the rollback goes straight through.
+    if (pending.calls.length > 1) return setModel(model);
+    return new Promise((resolve) => {
+      pending.release = () => resolve(setModel(model));
+    });
+  };
+  const running = opened.f.command('economist', '');
+  const panel = (await waitForScreen(opened.screens)).component;
+  await focus(panel, 'enabled');
+  await press(panel, KEY.enter);
+  assert.equal(panel.controller.session.draft.enabled, true);
+  panel.handleInput(KEY.ctrlS);
+  for (let i = 0; i < 100 && !pending.release; i++) await new Promise((r) => setTimeout(r, 5));
+  assert.ok(panel.controller.session.saving, 'the save is in flight');
+  assert.match(view(panel, 120), /Esc cancel save/);
+  return { ...opened, panel, running, pending, modelBefore: opened.f.ctx.model };
+};
+
+test('Esc while the model switch is pending cancels the save: nothing is written and the model is restored', async (t) => {
+  const { dir, f, panel, running, pending, modelBefore } = await pendingModelSwitch(t);
+  panel.handleInput(KEY.esc);
+  pending.release();
+  await panel.drain();
+  for (let i = 0; i < 100 && pending.calls.length < 2; i++) await new Promise((r) => setTimeout(r, 5));
+  assert.match(view(panel, 120), /Save cancelled/);
+  assert.equal((await saved(dir)).modelEconomist.enabled, false, 'the cancelled save wrote nothing');
+  assert.deepEqual(pending.calls, ['economist/auto', 'openrouter/cheap/model'], 'the switch was rolled back');
+  assert.equal(f.ctx.model, modelBefore);
+  assert.match(view(panel, 80), /^Economist \*$/m, 'the draft is kept');
+  await press(panel, KEY.esc, KEY.esc);
+  await running;
+  assert.equal((await saved(dir)).modelEconomist.enabled, false);
+  assert.match(f.notifications.at(-1), /no changes/i);
+});
+
+test('a model switch that finishes after Esc was given up on writes nothing; storage is then checked', async (t) => {
+  const { dir, f, panel, running, pending, modelBefore } = await pendingModelSwitch(t);
+  panel.handleInput(KEY.esc);
+  await panel.drain();
+  assert.match(view(panel, 120), /Save was not confirmed/);
+  assert.equal((await saved(dir)).modelEconomist.enabled, false, 'nothing was written yet');
+
+  pending.release();
+  for (let i = 0; i < 100 && pending.calls.length < 2; i++) await new Promise((r) => setTimeout(r, 5));
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal((await saved(dir)).modelEconomist.enabled, false, 'the late completion does not write the cancelled save');
+  assert.equal(f.ctx.model, modelBefore, 'and the late model switch is rolled back');
+
+  await press(panel, KEY.ctrlS);
+  assert.match(view(panel, 120), /Storage checked/);
+  assert.equal(panel.controller.session.dirty, true, 'storage still has routing off, so the draft stays pending');
+  await press(panel, KEY.esc);
+  assert.match(view(panel, 80), /Press Esc again to discard/);
+  await press(panel, KEY.esc);
+  await running;
+  assert.equal((await saved(dir)).modelEconomist.enabled, false, 'discarding leaves the file as it was');
+  assert.match(f.notifications.at(-1), /no changes/i);
+});
+
+test('a session switch closes the panel, drops the draft and reports nothing into the next session', async (t) => {
+  const { dir, f, screens } = await open(t);
+  const running = f.command('economist', '');
+  const screen = await waitForScreen(screens);
+  await choose(screen.component, 'mode', 'rules');
+  const notices = f.notifications.length;
+  f.ctx.sessionManager.getSessionId = () => 'S2';
+  await f.emit('session_switch');
+  await running;
+  assert.equal(screen.closed, true, 'the owner signal closed the panel');
+  assert.notEqual((await saved(dir)).modelEconomist.mode, 'rules', 'the draft was not written');
+  assert.equal(f.notifications.length, notices, 'no summary leaks into the new session');
+});
+
+test('a second /economist while the panel is open says so instead of stacking a panel', async (t) => {
+  const { f, screens } = await open(t);
+  const running = f.command('economist', '');
+  const screen = await waitForScreen(screens);
+  await f.command('economist', '');
+  assert.equal(screens.screens.length, 1);
+  assert.match(f.notifications.at(-1), /already open/);
+  await press(screen.component, KEY.esc);
   await running;
 });

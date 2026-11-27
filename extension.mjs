@@ -58,19 +58,29 @@ import {
   familyOf,
 } from './decision.mjs';
 import {
-  dashboardItems,
   explainLines,
-  runDashboard,
-  candidateActions,
   shortName,
   provideHost,
   runOperation,
+  host,
+  missingHostExports,
+  economistFields,
+  poolFields,
+  poolValues,
+  panelValues,
+  PANEL_COMMANDS,
+  setDraftValue,
+  restoreDraft,
+  openTextView,
+  openPiSettings,
+  SettingsSession,
+  simulationScreen,
 } from './menu.mjs';
 import {
   candidateDescription,
   localeName,
   loadProjectLocale,
-  localizedHelpLines,
+  commandReference,
   normalizeLocale,
   translate,
 } from './lib/i18n.mjs';
@@ -1645,8 +1655,8 @@ export default function economist(pi, injected = {}) {
       },
       cadence: {
         hint: 'session|prompt|subagent',
-        description: 'quando reavaliar modelo e esforço',
-        args: [{ values: CADENCES, hint: 'cadência' }],
+        description: 'when to re-evaluate model and effort',
+        args: [{ values: CADENCES, hint: 'cadence' }],
       },
       mode: {
         hint: 'MODE',
@@ -1680,12 +1690,12 @@ export default function economist(pi, injected = {}) {
       },
       classifier: {
         hint: 'on|off',
-        description: 'usar um classificador adicional para tarefas ambíguas',
+        description: 'use an additional classifier for ambiguous tasks',
         args: [
           {
             values: [
               { value: 'on', description: 'classify ambiguous requests' },
-              { value: 'off', description: 'somente regras, sem custo extra de classificação' },
+              { value: 'off', description: 'rules only, no extra classification cost' },
             ],
             hint: 'on|off',
           },
@@ -1838,10 +1848,7 @@ export default function economist(pi, injected = {}) {
     if (!physicalModels(ctx).some((m) => modelKey(m) === id)) return undefined;
     return undefined;
   };
-  /**
-   * Bare `/economist` opens the dashboard. Changes stay in a draft until Ctrl+S;
-   * the screen language is read and saved only in the trusted current project.
-   */
+  /** One table for the v2 text commands and the settings panel. */
   const v2Patch = (id, value, current) => {
     if (id === 'preset') return presetPatch(value, current);
     if (id === 'control' && CONTROLS.includes(value)) return { control: value, configVersion: 2,
@@ -1863,163 +1870,195 @@ export default function economist(pi, injected = {}) {
       throw Error('Adaptive activation requires paired measured evidence: P(CPVS improvement) > 0.95, sufficient samples and preserved quality/safety floors. Run /economist evaluate FILE.jsonl. Deterministic presets remain available.');
     if (mutatingStage && economics.rollback) throw Error(`Economist rolled back: ${economics.rollback.join(', ')}. Review evidence before a new session.`);
   };
+  /** One open panel per extension instance: a second `/economist` says so instead of stacking. */
+  let panelOpen = false;
+  /** The cancel hint of the offline-evaluation overlay, in the project's screen language. */
+  const operationHint = (ctx) =>
+    translate(loadProjectLocale(rt.root, Boolean(rt.root && ctx.isProjectTrusted?.())).locale, 'panel.cancelHint');
+  /**
+   * Panel field id → nested patch, in a fixed order: the priority preset first (it
+   * rewrites several fields at once), then control, then every other field that differs
+   * from the saved values. A field edited in the draft therefore always ends up in the
+   * file with the value the panel showed, whatever order the user edited in; the panel
+   * itself already shows the preset's consequences (see `onDraftChange` below).
+   */
+  const PANEL_V2_FIELDS = ['contextEnabled', 'retrievalBudget', 'privacyExecutor', 'privacyClassifier', 'privacyTelemetry', 'rollout', 'algorithm', 'bandit', 'delegation'];
+  const PANEL_V1_FIELDS = ['cadence', 'mode', 'policy', 'thinking', 'ceiling', 'fixed', 'scope'];
+  const panelPatch = (values, from, conf, FIELDS) => {
+    let next = structuredClone(conf);
+    const changed = (id) => JSON.stringify(values[id]) !== JSON.stringify(from[id]);
+    const asCommand = (value) => (typeof value === 'boolean' ? (value ? 'on' : 'off') : value);
+    for (const id of ['preset', 'control'])
+      if (changed(id)) next = merge(next, v2Patch(PANEL_COMMANDS[id], values[id], next));
+    for (const id of PANEL_V2_FIELDS)
+      if (changed(id)) next = merge(next, v2Patch(PANEL_COMMANDS[id], asCommand(values[id]), next));
+    for (const id of PANEL_V1_FIELDS) {
+      if (!changed(id)) continue;
+      const field = FIELDS[id];
+      if (!field.values.includes(values[id]))
+        throw Error(`Invalid ${id}: ${values[id]}. Allowed values: ${field.values.join(' | ')}`);
+      next = merge(next, field.patch(values[id]));
+    }
+    if (changed('enabled')) next = merge(next, { enabled: values.enabled === true });
+    return next;
+  };
+  /**
+   * Bare `/economist` opens the settings panel. Changes stay in a draft until Ctrl+S;
+   * the screen language is read and saved only in the trusted current project.
+   */
   const openMenu = async (ctx, { conf, locked, FIELDS }) => {
     const copy = (value) => structuredClone(value);
-    let saved = copy(conf);
     const projectRoot = rt.root;
     const trusted = Boolean(projectRoot && ctx.isProjectTrusted?.());
-    const localeState = loadProjectLocale(projectRoot, trusted);
-    let locale = localeState.locale;
-    saved.locale = locale;
-    let draft = copy(saved);
+    const savedLocale = loadProjectLocale(projectRoot, trusted).locale;
+    const scope = poolScope(ctx, conf);
+    const textFallback = () => {
+      // Clients without a custom Pi TUI get the state first and the commands after.
+      const tf = (key, values) => translate(savedLocale, key, values);
+      const pool = candidates(ctx);
+      return output(ctx, [
+        tf('fallback.enabled', { enabled: conf.enabled ? 'ON' : 'off', cadence: conf.cadence ?? 'prompt', mode: conf.mode, policy: conf.policy }),
+        tf('fallback.pool', {
+          count: pool.length,
+          scope: scope.active ? tf('fallback.scope', { count: scope.rows.length }) : tf('fallback.all'),
+          mode: conf.thinking?.mode ?? 'auto',
+          ceiling: conf.thinking?.ceiling ?? 'high',
+        }),
+        last
+          ? tf('fallback.last', { value: `${last.selectedModelId}:${last.selectedThinkingLevel ?? 'off'}`, reasons: last.reasonCodes?.join(' · ') ?? '' })
+          : tf('fallback.noLast'),
+        '',
+        tf('fallback.noTui'),
+        tf('fallback.commands.1'),
+        tf('fallback.commands.2'),
+        tf('fallback.commands.3'),
+      ].join('\n'));
+    };
+    if (ctx.mode !== 'tui' || typeof ctx.ui.custom !== 'function') return textFallback();
+    // Degradation is allowed; silence is not: name the host export that is missing.
+    const missing = host.tui ? missingHostExports(host.tui) : [];
+    if (missing.length) {
+      try {
+        ctx.ui.notify(translate(savedLocale, 'notice.dashboardUnavailable', { reason: `missing exports: ${missing.join(', ')}` }), 'warning');
+      } catch {
+        /* a broken notify must not hide the text panel */
+      }
+      return textFallback();
+    }
+    if (panelOpen) {
+      ctx.ui.notify(translate(savedLocale, 'panel.alreadyOpen'), 'warning');
+      return undefined;
+    }
+    panelOpen = true;
+    try {
+      return await runPanels(ctx, { conf, locked, FIELDS, copy, projectRoot, trusted, savedLocale, scope });
+    } finally {
+      panelOpen = false;
+    }
+  };
+  const runPanels = async (ctx, { conf, locked, FIELDS, copy, projectRoot, trusted, savedLocale, scope }) => {
+    let saved = copy(conf);
+    let base = panelValues(saved, savedLocale);
+    let locale = savedLocale;
     const t = (key, values) => translate(locale, key, values);
-    const isDirty = () => JSON.stringify(draft) !== JSON.stringify(saved);
-    const specs = () => draft.candidates.map((c) =>
-      typeof c === 'string' ? { id: c, tier: 1, tools: false } : { ...c },
-    );
-    const scope = poolScope(ctx, draft);
-    const unlockedItems = () => dashboardItems({
-      conf: draft,
-      pool: candidates(ctx),
-      scoped: scope.active ? scope.rows.length : physicalModels(ctx).length,
-      last,
-      locale,
-      notes: { modes: MODE_IDS, policies: POLICY_IDS, levels: THINKING_LEVELS, v2: true },
-    }).filter((item) => {
-      const lock = item.id === 'enabled' ? 'enabled' : item.id === 'pool' ? 'candidates' : FIELDS[item.id]?.lock;
-      return !lock || !Object.hasOwn(locked, lock);
+    const signals = [ctx.signal, economics.lifetime?.signal].filter(Boolean);
+    const signal = signals.length ? AbortSignal.any(signals) : new AbortController().signal;
+    const changes = [];
+    let livePanel;
+    // openPiSettings only uses `ui.custom`; wrapping it lets a save refresh the scope line.
+    const ui = {
+      custom: (factory, options) =>
+        ctx.ui.custom((tui, theme, keys, done) => {
+          const component = factory(tui, theme, keys, done);
+          livePanel = component?.controller;
+          return component;
+        }, options),
+    };
+    const enums = {
+      presets: PRESETS,
+      controls: CONTROLS,
+      cadences: CADENCE_IDS,
+      modes: MODE_IDS,
+      policies: POLICY_IDS,
+      thinking: THINKING_MODES.map((m) => m.value),
+      levels: THINKING_LEVELS,
+      scopes: SCOPE_SOURCES.map((s) => s.value),
+      stages: STAGES,
+    };
+    const locksFor = (l) => {
+      const global = translate(l, 'panel.source.global');
+      const locks = {};
+      if (Object.hasOwn(locked, 'enabled')) locks.enabled = global;
+      for (const id of PANEL_V1_FIELDS) if (Object.hasOwn(locked, FIELDS[id].lock)) locks[id] = global;
+      if (!trusted) locks.language = translate(l, 'panel.source.untrusted');
+      return locks;
+    };
+    const fields = (l) => economistFields(l, { enums, values: base, locks: locksFor(l) });
+    const overrides = (l) => ({ saved: translate(l, 'panel.saved', { path: rt.configFile }) });
+    const scopeLine = (l) => translate(l, 'panel.scope', {
+      enabled: translate(l, saved.enabled ? 'value.on' : 'value.off'),
+      mode: saved.mode,
+      policy: saved.policy,
+      pool: candidates(ctx).length,
+      scope: scope.active ? scope.rows.length : translate(l, 'panel.scopeAll'),
     });
-    const items = unlockedItems();
-    const updateLocalizedItems = (update) => {
-      const translated = unlockedItems();
-      for (const item of items) {
-        const next = translated.find((candidate) => candidate.id === item.id);
-        if (!next) continue;
-        item.label = next.label;
-        item.description = next.description;
-        item.values = next.values;
-        item.currentValue = next.currentValue;
-        update?.(item.id, item.currentValue);
-      }
+    const actions = (l) => {
+      const tl = (key, values) => translate(l, key, values);
+      return [
+        { id: 'pool', label: tl('row.pool'), description: tl('desc.pool', { count: scope.active ? scope.rows.length : physicalModels(ctx).length }),
+          hint: tl('value.pool', { count: candidates(ctx).length }), closeWith: true },
+        { id: 'economics', label: tl('row.economics'), description: tl('desc.economics'), hint: saved.rollout?.stage ?? 'observe',
+          closeWith: true, requiresSaved: false },
+        { id: 'explain', label: tl('row.explain'), description: tl('desc.explain'),
+          hint: last ? `${shortName(last.selectedModelId)}:${last.selectedThinkingLevel ?? 'off'}` : tl('value.none'),
+          closeWith: true, requiresSaved: false },
+        // The dry run routes with the saved settings, so it asks for a saved draft first.
+        { id: 'simulate', label: tl('row.simulate'), description: tl('desc.simulate'), closeWith: true },
+        { id: 'help', label: tl('row.help'), description: tl('desc.help'), closeWith: true, requiresSaved: false },
+      ];
     };
-    const menus = {
-      optimization: () => PRESETS.map(v => ({ value: `preset:${v}`, label: v, description: draft.preset === v ? '✓' : '' })),
-      'control-settings': () => CONTROLS.map(v => ({ value: `control:${v}`, label: v, description: draft.control === v ? '✓' : '' })),
-      'privacy-settings': () => ['privacy', 'privacy-classifier', 'privacy-telemetry'].flatMap(field => ['deny', 'redact', 'allow'].map(value =>
-        ({ value: `${field}:${value}`, label: `${field === 'privacy' ? 'Executor' : field.slice(8)}: ${value}` }))),
-      'context-settings': () => [
-        { value: 'context-enabled:on', label: 'Context optimization ON' }, { value: 'context-enabled:off', label: 'Context optimization OFF' },
-        ...[1024, 2048, 4096, 8192].map(v => ({ value: `retrieval-budget:${v}`, label: `Retrieval ${v} tokens` })),
-      ],
-      economics: () => economicsLines(economics.observer.report(economics.outcomes), economics.capabilities.capabilities, locale,
-        { stage: saved.rollout.stage, rollback: economics.rollback }),
-      advanced: () => [
-        ...dashboardItems({ conf: draft, pool: candidates(ctx), scoped: scope.rows.length, last, locale,
-          notes: { modes: MODE_IDS, policies: POLICY_IDS, levels: THINKING_LEVELS } })
-          .filter(r => r.values && r.id !== 'enabled').flatMap(r => r.values.map(v => ({ value: `${r.id}:${v}`, label: `${r.label}: ${v}` }))),
-        ...STAGES.map(v => ({ value: `rollout:${v}`, label: `Rollout: ${v}` })),
-        ...['expected-cost', 'cascade', 'bandit'].map(v => ({ value: `algorithm:${v}`, label: `Algorithm: ${v}` })),
-        ...['off', 'shadow', 'active'].map(v => ({ value: `bandit:${v}`, label: `Bandit: ${v}` })),
-        ...['deny', 'redact', 'allow'].map(v => ({ value: `privacy:${v}`, label: `Executor privacy: ${v}` })),
-        ...['on', 'off'].map(v => ({ value: `delegation:${v}`, label: `Isolated delegation: ${v}` })),
-      ],
-      language: () => [
-        { value: 'en', label: t('language.option.en'), description: t('language.description') },
-        { value: 'pt-BR', label: t('language.option.ptBR'), description: t('language.description') },
-      ],
-      pool: () => configuredCandidates(ctx, draft).map((c) => ({
-        value: c.value,
-        label: shortName(c.value),
-        description: candidateDescription({
-          tier: c.tier,
-          tools: c.tools,
-          live: physicalModels(ctx).some((model) => modelKey(model) === c.value),
-          inScope: !poolScope(ctx, draft).strict || poolScope(ctx, draft).ids.has(c.value),
-        }, locale),
-      })),
-      candidateRows: (id) => candidateActions(configuredCandidates(ctx, draft).find((c) => c.value === id), locale),
-      explain: () => explainLines(last, saved, { locale }),
-      help: () => localizedHelpLines(locale, usageText('economist', economistSpec).split('\n')),
-      simulate: async (text, { signal } = {}) => {
-        if (signal?.aborted) throw signal.reason ?? Error('cancelled');
-        if (isDirty()) throw Error(t('panel.simulationDraft'));
-        const run = await decide(text, ctx, { simulate: true, signal });
-        if (signal?.aborted) throw signal.reason ?? Error('cancelled');
-        return explainLines(run.decision, saved, { locale });
-      },
+    const formatError = (error, { phase }) => {
+      const message = String(error?.message ?? error ?? '').trim();
+      if (!message) return undefined;
+      return phase === 'save' ? t('notice.saveFailed', { error: message }) : message;
     };
-    const onChange = (id, value, update, target) => {
-      const lock = id === 'enabled' ? 'enabled' : id === 'poolEdit' ? 'candidates' : FIELDS[id]?.lock;
-      if (lock && Object.hasOwn(locked, lock)) throw Error(t('error.locked', { field: lock }));
-      if (['preset', 'control', 'rollout', 'context-enabled', 'retrieval-budget', 'algorithm', 'bandit', 'privacy', 'privacy-classifier', 'privacy-telemetry', 'delegation'].includes(id)) {
-        const patch = v2Patch(id, value, draft);
-        draft = merge(draft, patch);
-        updateLocalizedItems(update);
-        return `${id} → ${value}`;
-      }
-      if (id === 'language') {
-        if (!['en', 'pt-BR'].includes(value))
-          throw Error(t('error.invalidField', { field: 'language', value, values: 'en | pt-BR' }));
-        locale = normalizeLocale(value);
-        draft = merge(draft, { locale });
-        updateLocalizedItems(update);
-        return t('note.language', { language: localeName(locale) });
-      }
-      if (id === 'enabled') {
-        draft = merge(draft, { enabled: value === 'on' });
-        return t('note.enabled', { value });
-      }
-      if (id === 'pool') return undefined;
-      if (id === 'poolEdit') {
-        if (!target) throw Error(t('error.noCandidate'));
-        const rows = specs();
-        if (value === 'remove') {
-          if (!rows.some((c) => c.id === target))
-            return t('note.poolFromScope', { model: shortName(target) });
-          const activeScope = poolScope(ctx, draft);
-          const stays = refreshesScopeEachPrompt() && activeScope.active && activeScope.ids.has(target);
-          draft = merge(draft, { candidates: rows.filter((c) => c.id !== target) });
-          return stays
-            ? t('note.poolFromScope', { model: shortName(target) })
-            : t('note.poolRemoved', { model: shortName(target) });
-        }
-        const [kind, arg] = String(value).split(':');
-        if (kind !== 'tier' && kind !== 'tools') throw Error(t('error.invalidPoolEdit', { value }));
-        const patch = kind === 'tier' ? { tier: Number(arg) } : { tools: arg === 'on' };
-        const next = rows.some((c) => c.id === target)
-          ? rows.map((c) => (c.id === target ? { ...c, ...patch } : c))
-          : rows.concat([{ id: target, tier: 1, tools: true, ...patch }]);
-        draft = merge(draft, { candidates: next });
-        return t('note.poolEdit', { model: shortName(target), kind, value: arg });
-      }
-      const field = FIELDS[id];
-      if (!field) throw Error(t('error.unknownField', { field: id }));
-      if (!field.values.includes(value))
-        throw Error(t('error.invalidField', { field: id, value, values: field.values.join(' | ') }));
-      draft = merge(draft, field.patch(value));
-      return t(`note.field.${id}`, { value });
+    const common = (session, extra = {}) => ({
+      session,
+      signal,
+      locale,
+      messages: overrides(locale),
+      formatError,
+      // validateActivation can read paired evidence from disk: allow a slow disk, and
+      // give an in-flight write time to acknowledge Esc before calling it unknown.
+      saveTimeoutMs: 60_000,
+      cancelGraceMs: 1_000,
+      ...extra,
+    });
+    const display = (field, value) => {
+      if (field.kind === 'boolean') return t(value ? 'value.on' : 'value.off');
+      return field.choices?.find((c) => c.id === value)?.label ?? String(value);
     };
-    const onSave = async () => {
-      if (!isDirty()) return rt.configFile;
-      const localeWriteTrusted = Boolean(projectRoot && rt.root === projectRoot && ctx.isProjectTrusted?.());
-      if (draft.locale !== saved.locale && (!trusted || !localeWriteTrusted))
-        throw Error(t('language.saveTrusted'));
+    const record = (fieldList, values, from) => {
+      for (const field of fieldList)
+        if (JSON.stringify(values[field.id]) !== JSON.stringify(from[field.id]))
+          changes.push(translate(locale, 'summary.item', {
+            label: field.label,
+            before: display(field, from[field.id]),
+            after: display(field, values[field.id]),
+          }));
+    };
+    /** Validation, model switch with rollback and the write: the core the old dashboard save had. */
+    const commit = async (next, operationSignal, { locale: newLocale } = {}) => {
       const before = copy(saved);
-      let next = copy(draft);
       await validateActivation(next);
+      operationSignal.throwIfAborted();
       if (next.enabled && !before.enabled) {
         const available = routableModels(ctx, next);
         const selected = next.candidates.length ? new Set(next.candidates.map(specId)) : null;
         const viable = available.filter((row) => !selected || selected.has(row.value));
         if (!viable.length) throw Error(economistUnavailable(next, ctx, next));
-        if (!next.candidates.length) {
-          if (typeof ctx.ui.confirm !== 'function' || !(await ctx.ui.confirm(
-            t('confirm.noCandidates.title'),
-            t('confirm.noCandidates.body', { count: viable.length }),
-          ))) throw Error(t('notice.saveCancelled'));
-          next.candidates = proposeTiers(viable);
-          draft = merge(draft, { candidates: next.candidates });
-        }
+        // Consent was given in the panel: enabling showed what Ctrl+S would add.
+        if (!next.candidates.length) next.candidates = proposeTiers(viable);
       }
       const currentModel = ctx.model;
       const manualBefore = manualModel;
@@ -2035,9 +2074,12 @@ export default function economist(pi, injected = {}) {
       let path;
       try {
         if (modelToSet) await pi.setModel(modelToSet);
-        const localeChanged = next.locale !== before.locale;
-        if (!localeChanged) delete next.locale;
-        path = await rt.save('modelEconomist', next);
+        // An Esc that landed while the model switch was pending cancels the save before
+        // anything is written; the catch below puts the previous model back.
+        operationSignal.throwIfAborted();
+        if (newLocale) next.locale = newLocale;
+        else delete next.locale;
+        path = await rt.save('modelEconomist', next, { signal: operationSignal });
       } catch (error) {
         manualModel = manualBefore;
         if (modelToSet && currentModel) {
@@ -2048,60 +2090,170 @@ export default function economist(pi, injected = {}) {
       manualModel = manualAfter;
       if (!next.enabled) ctx.ui.setStatus('economist', undefined);
       saved = copy(rt.config.modelEconomist);
-      saved.locale = locale;
-      draft = copy(saved);
-      const poolItem = items.find((item) => item.id === 'pool');
-      if (poolItem) poolItem.currentValue = t('value.pool', { count: configuredCandidates(ctx, draft).length });
       if (next.enabled && !before.enabled && !modelToSet)
         ctx.ui.notify(t('notice.saveNoVirtualModel'), 'warning');
       return path;
     };
-    const report = economics.observer.report(economics.outcomes);
-    const dashboardTitle = () => t('dashboard.title', {
-      enabled: saved.enabled ? 'on' : 'off',
-      mode: saved.mode,
-      policy: saved.policy,
-      pool: candidates(ctx).length,
-      scope: scope.active ? scope.rows.length : 'all',
-    }) + '\n' + economicsHeader(report, locale);
-    const opened = await runDashboard({
-      ctx, title: dashboardTitle(), getTitle: dashboardTitle, items, onChange, menus, isDirty,
-      locale,
-      getLocale: () => locale,
-      onDiscard: () => {
-        draft = copy(saved);
-        locale = saved.locale;
-      },
-      onSave,
-    });
-    if (opened === false) {
-      // Clients without a custom Pi TUI keep the established command-status copy;
-      // CT55's locale selector is part of the interactive dashboard flow.
-      const fallback = (key, values) => translate('pt-BR', key, values);
-      const pool = candidates(ctx);
-      return output(ctx, [
-        fallback('fallback.enabled', { enabled: conf.enabled ? 'ON' : 'off', cadence: conf.cadence ?? 'prompt', mode: conf.mode, policy: conf.policy }),
-        fallback('fallback.pool', {
-          count: pool.length,
-          scope: scope.active ? fallback('fallback.scope', { count: scope.rows.length }) : fallback('fallback.all'),
-          mode: conf.thinking?.mode ?? 'auto',
-          ceiling: conf.thinking?.ceiling ?? 'high',
-        }),
-        last
-          ? fallback('fallback.last', { value: `${last.selectedModelId}:${last.selectedThinkingLevel ?? 'off'}`, reasons: last.reasonCodes?.join(' · ') ?? '' })
-          : fallback('fallback.noLast'),
-        '',
-        fallback('fallback.noTui'),
-        fallback('fallback.commands.1'),
-        fallback('fallback.commands.2'),
-        fallback('fallback.commands.3'),
-      ].join('\n'));
+    const persistMain = async (values, operationSignal) => {
+      operationSignal.throwIfAborted();
+      const localeChanged = values.language !== base.language;
+      const localeWriteTrusted = Boolean(projectRoot && rt.root === projectRoot && ctx.isProjectTrusted?.());
+      if (localeChanged && (!trusted || !localeWriteTrusted)) throw Error(t('language.saveTrusted'));
+      const next = panelPatch(values, base, saved, FIELDS);
+      if (localeChanged || JSON.stringify(next) !== JSON.stringify(saved))
+        await commit(next, operationSignal, { locale: localeChanged ? values.language : undefined });
+      record(fields(locale), values, base);
+      base = copy(values);
+      livePanel?.relabel({ scope: scopeLine(locale) });
+    };
+    /** Preset/control consequences, the enabling notice and the live language preview. */
+    let seen;
+    const pick = (draft) => ({ language: draft.language, preset: draft.preset, control: draft.control, enabled: draft.enabled });
+    const relocalize = (panel, l) => {
+      locale = l;
+      panel.setLocale(l, overrides(l));
+      panel.relabel({ title: translate(l, 'panel.title'), scope: scopeLine(l), fields: fields(l), actions: actions(l) });
+    };
+    const derive = (draft, id) => {
+      const prior = panelPatch({ ...draft, [id]: seen[id] }, base, saved, FIELDS);
+      return panelValues(merge(prior, v2Patch(PANEL_COMMANDS[id], draft[id], prior)), draft.language);
+    };
+    const cascade = (panel, draft, id) => {
+      const derived = derive(draft, id);
+      for (const field of panel.session.fields)
+        if (!['language', 'enabled', 'preset', 'control'].includes(field.id) && JSON.stringify(derived[field.id]) !== JSON.stringify(draft[field.id]))
+          setDraftValue(panel.session, field.id, derived[field.id]);
+    };
+    const onDraftChange = (draft, { reason }, panel) => {
+      if (reason === 'discard') {
+        if (locale !== base.language) relocalize(panel, base.language);
+        seen = pick(panel.session.draft);
+        return;
+      }
+      if (draft.language !== seen.language) relocalize(panel, draft.language);
+      const choice = (id, value) => panel.session.fields.find((f) => f.id === id)?.choices?.find((c) => c.id === value)?.label ?? value;
+      if (draft.preset !== seen.preset) {
+        cascade(panel, draft, 'preset');
+        panel.session.setStatus(t('panel.presetApplied', { preset: choice('preset', draft.preset) }), 'info');
+      } else if (draft.control !== seen.control) {
+        cascade(panel, draft, 'control');
+        panel.session.setStatus(t('panel.controlApplied', { control: choice('control', draft.control) }), 'info');
+      }
+      if (draft.enabled !== seen.enabled) {
+        if (draft.enabled && !base.enabled && !saved.candidates.length) {
+          const viable = routableModels(ctx, saved).length;
+          panel.session.setStatus(viable ? t('panel.enableProposes', { count: viable }) : economistUnavailable(saved, ctx, saved), 'warning');
+        } else if (!draft.enabled && panel.session.statusKind === 'warning') panel.session.setStatus('');
+      }
+      seen = pick(panel.session.draft);
+    };
+    const reconcileMain = async () => {
+      saved = copy(rt.config.modelEconomist);
+      base = panelValues(saved, loadProjectLocale(rt.root, trusted).locale);
+      return copy(base);
+    };
+    const view = (title, lines) => openTextView(ui, { title, lines: lines.filter((line) => String(line).trim()), locale, signal });
+    const openPool = async () => {
+      const rows = configuredCandidates(ctx, saved);
+      if (!rows.length) {
+        ctx.ui.notify(t('pool.empty'), 'info');
+        return;
+      }
+      const activeScope = poolScope(ctx, saved);
+      const scopeLocked = (id) => refreshesScopeEachPrompt() && activeScope.active && activeScope.ids.has(id) &&
+        !saved.candidates.some((c) => specId(c) === id);
+      let poolBase = poolValues(rows);
+      const poolFieldsFor = (l) => poolFields(l, rows, { scopeLocked });
+      const session = new SettingsSession(poolFieldsFor(locale), poolBase, { locale });
+      const persist = async (values, operationSignal) => {
+        operationSignal.throwIfAborted();
+        let list = saved.candidates.map((c, i) => (typeof c === 'string' ? { id: c, tier: i + 1, tools: false } : { ...c }));
+        for (const row of rows) {
+          const id = row.value;
+          if (!values[`member:${id}`]) {
+            list = list.filter((c) => c.id !== id);
+            continue;
+          }
+          const patch = {};
+          if (values[`tier:${id}`] !== poolBase[`tier:${id}`]) patch.tier = Number(values[`tier:${id}`]);
+          if (values[`tools:${id}`] !== poolBase[`tools:${id}`]) patch.tools = values[`tools:${id}`];
+          if (!Object.keys(patch).length) continue;
+          list = list.some((c) => c.id === id)
+            ? list.map((c) => (c.id === id ? { ...c, ...patch } : c))
+            : list.concat([{ id, tier: Number(values[`tier:${id}`]), tools: values[`tools:${id}`] }]);
+        }
+        if (JSON.stringify(list) !== JSON.stringify(saved.candidates))
+          await commit({ ...copy(saved), candidates: list }, operationSignal);
+        record(poolFieldsFor(locale), values, poolBase);
+        poolBase = copy(values);
+      };
+      const reconcile = async () => {
+        const now = configuredCandidates(ctx, rt.config.modelEconomist);
+        saved = copy(rt.config.modelEconomist);
+        poolBase = Object.fromEntries(rows.flatMap((row) => {
+          const current = now.find((c) => c.value === row.value);
+          return [
+            [`member:${row.value}`, Boolean(current)],
+            [`tier:${row.value}`, String(current?.tier ?? poolBase[`tier:${row.value}`])],
+            [`tools:${row.value}`, current ? current.tools === true : poolBase[`tools:${row.value}`]],
+          ];
+        }));
+        return copy(poolBase);
+      };
+      await openPiSettings(ui, common(session, {
+        title: t('pool.title'),
+        scope: t('pool.scope', { count: rows.length }),
+        persist,
+        reconcile,
+      }));
+    };
+    const openSimulate = async () => {
+      const { session, ...screen } = simulationScreen(locale, {
+        run: async (text, operationSignal) => {
+          const run = await decide(text, ctx, { simulate: true, signal: operationSignal });
+          return explainLines(run.decision, saved, { locale });
+        },
+      });
+      const result = await openPiSettings(ui, common(session, screen));
+      if (result.action === 'run' && Array.isArray(result.actionValue) && !signal.aborted)
+        await view(t('panel.simulation'), result.actionValue);
+    };
+    let carry;
+    while (!signal.aborted) {
+      locale = carry?.language ?? base.language;
+      const session = new SettingsSession(fields(locale), base, { locale, messages: overrides(locale) });
+      restoreDraft(session, carry);
+      seen = pick(session.draft);
+      const result = await openPiSettings(ui, common(session, {
+        title: t('panel.title'),
+        scope: scopeLine(locale),
+        actions: actions(locale),
+        persist: persistMain,
+        reconcile: reconcileMain,
+        onDraftChange,
+      }));
+      livePanel = undefined;
+      carry = JSON.stringify(session.draft) !== JSON.stringify(base) ? session.draft : undefined;
+      if (result.status !== 'succeeded' || !result.action || signal.aborted) break;
+      if (result.action === 'pool') await openPool();
+      else if (result.action === 'simulate') await openSimulate();
+      else if (result.action === 'economics') {
+        const report = economics.observer.report(economics.outcomes);
+        await view(t('panel.economics'), [
+          ...economicsHeader(report, locale).split('\n'),
+          ...economicsLines(report, economics.capabilities.capabilities, locale, { stage: saved.rollout.stage, rollback: economics.rollback }),
+        ]);
+      } else if (result.action === 'explain') await view(t('panel.explain'), explainLines(last, saved, { locale }));
+      else if (result.action === 'help') await view(t('panel.help'), commandReference(locale, 'economist', economistSpec));
+      else break;
     }
-    const changed = opened?.changed ?? [];
+    // A panel closed by a session switch or shutdown reports nothing into the next session.
+    if (signal.aborted) return undefined;
+    locale = base.language;
     return output(
       ctx,
-      changed.length
-        ? `${t('summary.changed', { count: changed.length })}\n${changed.map((c) => `· ${c}`).join('\n')}\n${t('summary.savedAt', { path: rt.configFile })}`
+      changes.length
+        ? `${t('summary.changed', { count: changes.length })}\n${changes.map((c) => `· ${c}`).join('\n')}\n${t('summary.savedAt', { path: rt.configFile })}`
         : t('summary.none'),
     );
   };
@@ -2131,7 +2283,7 @@ export default function economist(pi, injected = {}) {
         const signal = ctx.signal ? AbortSignal.any([ctx.signal, economics.lifetime.signal]) : economics.lifetime.signal;
         const report = await runOperation(ctx, 'Offline IPS/SNIPS', async signal => {
           const { rows } = await readMatrix(path, { signal }); return evaluateOffline(rows, { mode: 'off-policy', signal });
-        }, signal);
+        }, signal, { cancelHint: operationHint(ctx) });
         signal.throwIfAborted(); return output(ctx, report);
       }
       if (['preset', 'control', 'rollout', 'context-enabled', 'retrieval-budget', 'algorithm', 'bandit', 'privacy', 'privacy-classifier', 'privacy-telemetry', 'delegation'].includes(action)) {
@@ -2151,7 +2303,7 @@ export default function economist(pi, injected = {}) {
         const { report, datasetHash } = await runOperation(ctx, 'Offline paired evaluation', async signal => {
           const { rows, text } = await readMatrix(path, { signal });
           return { report: await evaluateOffline(rows, { signal, minSamples: conf.adaptive.minSamples }), datasetHash: hash(text) };
-        }, signal);
+        }, signal, { cancelHint: operationHint(ctx) });
         signal.throwIfAborted();
         await store.append('economics-evaluations', { id: uid(), report, occurredAt: now(), datasetHash, policyFingerprint });
         signal.throwIfAborted();

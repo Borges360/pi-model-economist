@@ -14,7 +14,7 @@ import {
   levels,
 } from '../routing.mjs';
 import { rankActions } from '../decision.mjs';
-import { dashboardItems, explainLines, candidateActions, tierForPool } from '../menu.mjs';
+import { economistFields, panelValues, poolFields, poolValues, explainLines, candidateActions, tierForPool } from '../menu.mjs';
 import { fakePi } from '../test-support/fakes.mjs';
 
 const conf = defaults.modelEconomist;
@@ -327,27 +327,42 @@ test('the dashboard reflects live config and the pool helpers stay pure', () => 
     thinking: { ...conf.thinking, mode: 'follow', ceiling: 'xhigh', riskFloor: 'medium' },
     scope: { source: 'all', strict: false },
   };
-  const items = dashboardItems({
-    conf: live,
-    pool: [{ id: 'a' }, { id: 'b' }],
-    scoped: 2,
-    last: null,
-    notes: { modes: ['rules', 'hybrid'], policies: ['balanced'], levels },
-  });
-  const byId = Object.fromEntries(items.map((i) => [i.id, i]));
-  assert.equal(byId.enabled.currentValue, 'off');
-  assert.equal(byId.thinking.currentValue, 'follow');
-  assert.equal(byId.ceiling.currentValue, 'xhigh');
+  const values = panelValues(live, 'en');
+  assert.equal(values.enabled, false);
+  assert.equal(values.thinking, 'follow');
+  assert.equal(values.ceiling, 'xhigh');
+  assert.equal(values.cadence, 'prompt');
+  assert.equal(values.scope, 'all');
+  const enums = {
+    presets: ['balanced'], controls: ['advisory'], cadences: ['session', 'prompt', 'subagent'],
+    modes: ['rules', 'hybrid'], policies: ['balanced'], thinking: ['auto', 'follow', 'fixed'],
+    levels, scopes: ['scoped', 'all'], stages: ['observe'],
+  };
+  const fields = economistFields('en', { enums, values });
+  const byId = Object.fromEntries(fields.map((f) => [f.id, f]));
+  for (const [id, value] of Object.entries(values)) {
+    const field = byId[id];
+    assert.ok(field, `${id} has a row`);
+    if (field.kind === 'select') assert.ok(field.choices.some((c) => c.id === value), `${id}: the current value ${value} is selectable`);
+  }
   assert.equal(byId['risk-floor'], undefined);
   assert.equal(byId['selected-as'], undefined);
-  assert.equal(byId.cadence.currentValue, 'prompt');
-  assert.equal(byId.scope.currentValue, 'all');
   assert.equal(byId['scope-strict'], undefined);
   assert.equal(byId.classifier, undefined);
   assert.equal(byId.poolAdd, undefined);
   assert.equal(byId.poolEdit, undefined);
-  assert.equal(byId.pool.currentValue, '2 modelo(s)');
-  assert.ok(items.every((i) => i.description), 'every row explains itself');
+  assert.ok(fields.every((f) => f.description), 'every row explains itself');
+  // A legacy value outside today's list stays selectable, so an untouched row never blocks Ctrl+S.
+  const legacy = economistFields('en', { enums, values: { ...values, mode: 'jev' } });
+  assert.ok(legacy.find((f) => f.id === 'mode').choices.some((c) => c.id === 'jev'));
+  // Pool rows: membership, tier and tools per candidate, valued from the saved spec.
+  const rows = [{ value: 'p/a', tier: 2, tools: true }, { value: 'p/b', tier: 9, tools: false }];
+  assert.deepEqual(poolValues(rows), {
+    'member:p/a': true, 'tier:p/a': '2', 'tools:p/a': true,
+    'member:p/b': true, 'tier:p/b': '5', 'tools:p/b': false,
+  });
+  assert.equal(poolFields('pt-BR', rows).length, 6);
+  assert.match(poolFields('pt-BR', rows)[1].choices[0].label, /cumprimentos/);
   assert.equal(tierForPool(0, 1), 1);
   assert.ok(tierForPool(3, 4) > tierForPool(0, 4), 'a pricier index gets a higher tier');
   const actions = candidateActions({ tier: 2, tools: true });

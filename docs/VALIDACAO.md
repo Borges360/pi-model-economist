@@ -22,19 +22,19 @@ carregador real, nenhuma chamada de modelo):
 node scripts/smoke-dashboard.mjs
 ```
 
-Resultado (resumo; a saída completa lista cada tela renderizada):
+Resultado em 23/11/2026 (Pi 1.6.0 instalado; também passa com `PI_CODING_AGENT_ENTRY` apontando
+para o 1.5.2):
 
 ```
-pi-tui.Container: function · pi-coding-agent.DynamicBorder: function
-DECISÃO ANTES DO PAINEL → selectedModelId: openrouter/strong/model · selectedThinkingLevel: minimal
-FECHAMENTO → {"changed":["policy → balanced","cheap/model · tier 5"]}
-DECISÃO DEPOIS DO PAINEL → selectedModelId: openrouter/cheap/model · selectedThinkingLevel: minimal
-OK: menu abriu, navegou, persistiu e fechou com resumo contra o host real.
+PASS Pi 1.6.0: real loader, 3 tools, isolated copy without node_modules/pi-tui, preset ↓↓Enter↑Enter, Ctrl+S keeps it open, pt-BR preview, Esc warns then discards, pool, simulation, 11 frames at 40/80/120 columns, offline evaluation thread, no provider calls.
 ```
 
-Este smoke foi o que expôs os dois bugs que os testes de unidade não viam: `DynamicBorder`
-destruturado do `pi-tui` (o export é do `pi-coding-agent`) e o `await import` preguiçoso do
-host, que o Node resolve nativamente e derruba com `ERR_MODULE_NOT_FOUND`.
+O painel usa a cópia vendorizada do adaptador em `vendor/inteiro-terminal/`, que importa
+`@earendil-works/pi-tui` de forma estática. O smoke carrega também uma cópia isolada, só com os
+arquivos publicados e sem `node_modules/pi-tui`, para provar que o carregador do Pi entrega o
+módulo do host. Um smoke anterior expôs dois bugs que os testes de unidade não viam: um export
+lido do pacote errado e um `await import` preguiçoso do host, que o Node resolve nativamente e
+derruba com `ERR_MODULE_NOT_FOUND`. Avaliação humana em terminal físico continua separada.
 
 No diretório pi-cost-profiler:
 

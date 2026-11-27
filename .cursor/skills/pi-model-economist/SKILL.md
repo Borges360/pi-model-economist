@@ -58,9 +58,10 @@ product's local behavior and safety boundaries.
 - Run `npm test`, `npm run test:host` (installed Pi with synthetic metadata) and
   `npm pack --dry-run` for release changes. Do not publish implicitly.
 
-- `/economist` opens the dashboard. Keep command names and native Pi completion
-  aligned with configured values; drafts and saves must retain the documented
-  Ctrl+S/Escape behavior.
+- `/economist` opens the settings panel (vendored adapter in
+  `vendor/inteiro-terminal/`; never edit it by hand). Keep command names and
+  native Pi completion aligned with configured values; drafts and saves must
+  retain the documented Ctrl+S/Escape behavior.
 - Read `README.md` and `docs/fluxo-de-decisao.md` before changing behavior;
   consult `decision.mjs`, `routing.mjs`, `extension.mjs`, and `benchmark.mjs` for
   the corresponding implementation.
@@ -69,5 +70,6 @@ product's local behavior and safety boundaries.
   unit suite and relevant additional checks.
 - No INTEIRO design-system role is selected for this product. Do not infer
   adoption from shared Harness metadata, and preserve the mark's license notice.
+  The vendored panel adapter is code only: it paints with the Pi host theme.
 - Live Pi sessions, provider calls, persistent user settings and publication
   require separate authorization.
